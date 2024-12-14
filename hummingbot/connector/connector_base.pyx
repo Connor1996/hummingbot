@@ -501,6 +501,16 @@ cdef class ConnectorBase(NetworkIterator):
         """
         raise NotImplementedError
 
+    async def get_price_for_quote_volume_async(self, trading_pair: str, is_buy: bool, volume: Decimal) -> Decimal:
+        """
+        Returns a price for a given quote volume.
+        :param trading_pair: The market trading pair
+        :param is_buy: True for buy order, False for sell order
+        :param volume: The quote volume
+        :return The price
+        """
+        raise NotImplementedError
+
     @property
     def available_balances(self) -> Dict[str, Decimal]:
         return self._account_available_balances

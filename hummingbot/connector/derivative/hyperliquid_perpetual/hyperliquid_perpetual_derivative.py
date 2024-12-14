@@ -723,6 +723,10 @@ class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
             entry_price = Decimal(position.get("entryPx"))
             amount = Decimal(position.get("szi", 0))
             leverage = Decimal(position.get("leverage").get("value"))
+            # liquidationPx may be "null"
+            liquidation_price = position.get("liquidationPx")
+            if liquidation_price is not None:
+                liquidation_price = None if liquidation_price == "null" else Decimal(liquidation_price)
             pos_key = self._perpetual_trading.position_key(hb_trading_pair, position_side)
             if amount != 0:
                 _position = Position(
@@ -731,7 +735,8 @@ class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
                     unrealized_pnl=unrealized_pnl,
                     entry_price=entry_price,
                     amount=amount,
-                    leverage=leverage
+                    leverage=leverage,
+                    liquidation_price=liquidation_price
                 )
                 self._perpetual_trading.set_position(pos_key, _position)
             else:

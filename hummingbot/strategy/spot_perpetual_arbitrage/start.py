@@ -1,7 +1,10 @@
 from decimal import Decimal
+
 from hummingbot.strategy.market_trading_pair_tuple import MarketTradingPairTuple
 from hummingbot.strategy.spot_perpetual_arbitrage.spot_perpetual_arbitrage import SpotPerpetualArbitrageStrategy
-from hummingbot.strategy.spot_perpetual_arbitrage.spot_perpetual_arbitrage_config_map import spot_perpetual_arbitrage_config_map
+from hummingbot.strategy.spot_perpetual_arbitrage.spot_perpetual_arbitrage_config_map import (
+    spot_perpetual_arbitrage_config_map,
+)
 
 
 def start(self):
@@ -9,6 +12,7 @@ def start(self):
     spot_market = spot_perpetual_arbitrage_config_map.get("spot_market").value
     perpetual_connector = spot_perpetual_arbitrage_config_map.get("perpetual_connector").value.lower()
     perpetual_market = spot_perpetual_arbitrage_config_map.get("perpetual_market").value
+    total_amount = spot_perpetual_arbitrage_config_map.get("total_amount").value
     order_amount = spot_perpetual_arbitrage_config_map.get("order_amount").value
     perpetual_leverage = spot_perpetual_arbitrage_config_map.get("perpetual_leverage").value
     min_opening_arbitrage_pct = spot_perpetual_arbitrage_config_map.get("min_opening_arbitrage_pct").value / Decimal("100")
@@ -28,6 +32,7 @@ def start(self):
     self.strategy = SpotPerpetualArbitrageStrategy()
     self.strategy.init_params(spot_market_info,
                               perpetual_market_info,
+                              total_amount,
                               order_amount,
                               perpetual_leverage,
                               min_opening_arbitrage_pct,

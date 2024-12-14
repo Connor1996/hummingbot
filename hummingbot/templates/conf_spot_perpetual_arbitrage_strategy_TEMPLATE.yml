@@ -13,6 +13,8 @@ spot_market: null
 perpetual_connector: null
 perpetual_market: null
 
+total_amount: null
+
 # Order amount to submit orders on both spot and perpetual markets
 order_amount: null
 
