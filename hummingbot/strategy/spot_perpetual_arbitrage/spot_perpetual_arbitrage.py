@@ -8,12 +8,19 @@ import pandas as pd
 
 from hummingbot.connector.connector_base import ConnectorBase
 from hummingbot.connector.derivative.position import Position
+from hummingbot.connector.perpetual_derivative_py_base import PerpetualDerivativePyBase
 from hummingbot.core.clock import Clock
 from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
 from hummingbot.core.data_type.limit_order import LimitOrder
 from hummingbot.core.data_type.market_order import MarketOrder
 from hummingbot.core.data_type.order_candidate import OrderCandidate, PerpetualOrderCandidate
-from hummingbot.core.event.events import BuyOrderCompletedEvent, PositionModeChangeEvent, SellOrderCompletedEvent
+from hummingbot.core.event.events import (
+    BuyOrderCompletedEvent,
+    FundingPaymentCompletedEvent,
+    OrderFilledEvent,
+    PositionModeChangeEvent,
+    SellOrderCompletedEvent,
+)
 from hummingbot.core.utils.async_utils import safe_ensure_future, safe_gather
 from hummingbot.logger import HummingbotLogger
 from hummingbot.strategy.market_trading_pair_tuple import MarketTradingPairTuple
@@ -30,6 +37,15 @@ class StrategyState(Enum):
     Opening = 1
     Opened = 2
     Closing = 3
+
+
+class Stats:
+    def __init__(self):
+        self._total_amount_opened = Decimal(0)
+        self._fee_paid = Decimal(0)
+        self._overall_spread = Decimal(0)
+        self._spread_earned = Decimal(0)
+        self._funding_earned = Decimal(0)
 
 
 class SpotPerpetualArbitrageStrategy(StrategyPyBase):
@@ -50,6 +66,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
     def init_params(self,
                     spot_market_info: MarketTradingPairTuple,
                     perp_market_info: MarketTradingPairTuple,
+                    total_amount: Decimal,
                     order_amount: Decimal,
                     perp_leverage: int,
                     min_opening_arbitrage_pct: Decimal,
@@ -61,7 +78,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         """
         :param spot_market_info: The spot market info
         :param perp_market_info: The perpetual market info
-        :param order_amount: The order amount
+        :param order_amount: The amount per order
         :param perp_leverage: The leverage level to use on perpetual market
         :param min_opening_arbitrage_pct: The minimum spread to open arbitrage position (e.g. 0.0003 for 0.3%)
         :param min_closing_arbitrage_pct: The minimum spread to close arbitrage position (e.g. 0.0003 for 0.3%)
@@ -75,6 +92,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         self._perp_market_info = perp_market_info
         self._min_opening_arbitrage_pct = min_opening_arbitrage_pct
         self._min_closing_arbitrage_pct = min_closing_arbitrage_pct
+        self._total_amount = total_amount
         self._order_amount = order_amount
         self._perp_leverage = perp_leverage
         self._spot_market_slippage_buffer = spot_market_slippage_buffer
@@ -85,13 +103,15 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         self._ev_loop = asyncio.get_event_loop()
         self._last_timestamp = 0
         self._status_report_interval = status_report_interval
+        self._stats = Stats()
         self.add_markets([spot_market_info.market, perp_market_info.market])
 
         self._main_task = None
-        self._in_flight_opening_order_ids = []
-        self._completed_opening_order_ids = []
-        self._completed_closing_order_ids = []
+        self._completed_buy_order_id = 0
+        self._completed_sell_order_id = 0
+        self._completed_order_fills = []
         self._strategy_state = StrategyState.Closed
+        self._position_action = PositionAction.OPEN
         self._ready_to_start = False
         self._last_arb_op_reported_ts = 0
         self._position_mode_ready = False
@@ -169,22 +189,17 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
                 return
 
             if len(self.perp_positions) == 1:
-                adj_perp_amount = self._perp_market_info.market.quantize_order_amount(
-                    self._perp_market_info.trading_pair, self._order_amount)
-                if abs(self.perp_positions[0].amount) == adj_perp_amount:
+                if abs(self.perp_positions[0].amount) == self._spot_market_info.base_balance:
                     self.logger().info(f"There is an existing {self._perp_market_info.trading_pair} "
-                                       f"{self.perp_positions[0].position_side.name} position. The bot resumes "
-                                       f"operation to close out the arbitrage position")
-                    self._strategy_state = StrategyState.Opened
-                    self._ready_to_start = True
+                                       f"{self.perp_positions[0].position_side.name} position with the same amount {self.perp_positions[0].amount}.")
+                    self._stats._total_amount_opened = self.perp_positions[0].amount + self._spot_market_info.base_balance
                 else:
-                    self.logger().info(f"There is an existing {self._perp_market_info.trading_pair} "
-                                       f"{self.perp_positions[0].position_side.name} position with unmatched "
-                                       f"position amount. Please manually close out the position before starting "
-                                       f"this strategy.")
+                    self.logger().warning(f"There is an existing {self._perp_market_info.trading_pair} "
+                                          f"{self.perp_positions[0].position_side.name} position with unmatched "
+                                          f"position amount {self.perp_positions[0].amount} and balance {self._spot_market_info.base_balance}"
+                                          f"Please manually close out the position before starting this strategy.")
                     return
-            else:
-                self._ready_to_start = True
+            self._ready_to_start = True
 
         if self._ready_to_start and (self._main_task is None or self._main_task.done()):
             self._main_task = safe_ensure_future(self.main(timestamp))
@@ -195,11 +210,13 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         """
         self.update_strategy_state()
         if self._strategy_state in (StrategyState.Opening, StrategyState.Closing):
+            # unfinished opening or closing orders, wait for them to complete
             return
-        if self.strategy_state == StrategyState.Closed and self._next_arbitrage_opening_ts > self.current_timestamp:
+        if self._position_action == PositionAction.NIL:
             return
+
         proposals = await self.create_base_proposals()
-        if self._strategy_state == StrategyState.Opened:
+        if self._position_action == PositionAction.CLOSE:
             perp_is_buy = False if self.perp_positions[0].amount > 0 else True
             proposals = [p for p in proposals if p.perp_side.is_buy == perp_is_buy and p.profit_pct() >=
                          self._min_closing_arbitrage_pct]
@@ -209,7 +226,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             return
         proposal = proposals[0]
         if self._last_arb_op_reported_ts + 60 < self.current_timestamp:
-            pos_txt = "closing" if self._strategy_state == StrategyState.Opened else "opening"
+            pos_txt = "closing" if self._position_action == PositionAction.CLOSE else "opening"
             self.logger().info(f"Arbitrage position {pos_txt} opportunity found.")
             self.logger().info(f"Profitability ({proposal.profit_pct():.2%}) is now above min_{pos_txt}_arbitrage_pct.")
             self._last_arb_op_reported_ts = self.current_timestamp
@@ -221,38 +238,75 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         """
         Updates strategy state to either Opened or Closed if the condition is right.
         """
-        if self._strategy_state == StrategyState.Opening and len(self._completed_opening_order_ids) == 2 and \
-                self.perp_positions:
+
+        if self._total_amount - self._stats._total_amount_opened >= self.order_amount * 2:
+            self._position_action = PositionAction.OPEN
+        elif self._stats._total_amount_opened > self._total_amount:
+            self._position_action = PositionAction.CLOSE
+        else:
+            self._position_action = PositionAction.NIL
+            return
+
+        if self._completed_buy_order_id == 0 or self._completed_sell_order_id == 0:
+            self.logger().info("Waiting for orders to complete.")
+            # orders not completed yet
+            return
+        self.logger().info("Complete one round. buy order id: %s, sell order id: %s", self._completed_buy_order_id,
+                           self._completed_sell_order_id)
+
+        buy_amount = Decimal(0)
+        sell_amount = Decimal(0)
+        for fill in self._completed_order_fills:
+            self._stats._fee_paid += fill.trade_fee.fee_amount_in_token(
+                trading_pair=fill.trading_pair,
+                price=fill.price,
+                order_amount=fill.amount,
+                token="USDC",
+            )
+            if fill.order_id == self._completed_buy_order_id:
+                buy_amount += fill.amount * fill.price
+            elif fill.order_id == self._completed_sell_order_id:
+                sell_amount += fill.amount * fill.price
+            else:
+                self.logger().warning(f"Unknown order id {fill.order_id} in order fills.")
+
+        if self._strategy_state == StrategyState.Opening:
             self._strategy_state = StrategyState.Opened
-            self._completed_opening_order_ids.clear()
-        elif self._strategy_state == StrategyState.Closing and len(self._completed_closing_order_ids) == 2 and \
-                len(self.perp_positions) == 0:
+            # buy spot and sell perp
+            self._stats._total_amount_opened += buy_amount + sell_amount
+            self._stats._overall_spread = (buy_amount - sell_amount) / sell_amount
+        elif self._strategy_state == StrategyState.Closing:
             self._strategy_state = StrategyState.Closed
-            self._completed_closing_order_ids.clear()
+            # sell spot and buy perp
+            self._stats._total_amount_opened -= buy_amount + sell_amount
             self._next_arbitrage_opening_ts = self.current_timestamp + self._next_arbitrage_opening_delay
+
+        self._completed_buy_order_id = 0
+        self._completed_sell_order_id = 0
+        self._completed_order_fills.clear()
 
     async def create_base_proposals(self) -> List[ArbProposal]:
         """
         Creates a list of 2 base proposals, no filter.
         :return: A list of 2 base proposals.
         """
-        tasks = [self._spot_market_info.market.get_order_price(self._spot_market_info.trading_pair, True,
-                                                               self._order_amount),
-                 self._spot_market_info.market.get_order_price(self._spot_market_info.trading_pair, False,
-                                                               self._order_amount),
-                 self._perp_market_info.market.get_order_price(self._perp_market_info.trading_pair, True,
-                                                               self._order_amount),
-                 self._perp_market_info.market.get_order_price(self._perp_market_info.trading_pair, False,
-                                                               self._order_amount)]
+        tasks = [self._spot_market_info.market.get_price_for_quote_volume_async(self._spot_market_info.trading_pair, True,
+                                                                                self._order_amount),
+                 self._spot_market_info.market.get_price_for_quote_volume_async(self._spot_market_info.trading_pair, False,
+                                                                                self._order_amount),
+                 self._perp_market_info.market.get_price_for_quote_volume_async(self._perp_market_info.trading_pair, True,
+                                                                                self._order_amount),
+                 self._perp_market_info.market.get_price_for_quote_volume_async(self._perp_market_info.trading_pair, False,
+                                                                                self._order_amount)]
         prices = await safe_gather(*tasks, return_exceptions=True)
         spot_buy, spot_sell, perp_buy, perp_sell = [*prices]
         return [
             ArbProposal(ArbProposalSide(self._spot_market_info, True, spot_buy),
                         ArbProposalSide(self._perp_market_info, False, perp_sell),
-                        self._order_amount),
+                        self._order_amount / min(spot_buy, perp_sell)),
             ArbProposal(ArbProposalSide(self._spot_market_info, False, spot_sell),
                         ArbProposalSide(self._perp_market_info, True, perp_buy),
-                        self._order_amount)
+                        self._order_amount / min(spot_sell, perp_buy))
         ]
 
     def apply_slippage_buffers(self, proposal: ArbProposal):
@@ -402,32 +456,29 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         perp_side = proposal.perp_side
         perp_order_fn = self.buy_with_specific_market if perp_side.is_buy else self.sell_with_specific_market
         side = "BUY" if perp_side.is_buy else "SELL"
-        position_action = PositionAction.CLOSE if self._strategy_state == StrategyState.Opened else PositionAction.OPEN
         self.log_with_clock(
             logging.INFO,
             f"Placing {side} order for {proposal.order_amount} {perp_side.market_info.base_asset} "
             f"at {perp_side.market_info.market.display_name} at {perp_side.order_price} price to "
-            f"{position_action.name} position."
+            f"{self._position_action.name} position."
         )
         perp_order_fn(
             perp_side.market_info,
             proposal.order_amount,
             perp_side.market_info.market.get_taker_order_type(),
             perp_side.order_price,
-            position_action=position_action
+            position_action=self._position_action
         )
-        if self._strategy_state == StrategyState.Opened:
-            self._strategy_state = StrategyState.Closing
-            self._completed_closing_order_ids.clear()
-        else:
+        if self._position_action == PositionAction.OPEN:
             self._strategy_state = StrategyState.Opening
-            self._completed_opening_order_ids.clear()
+        else:
+            self._strategy_state = StrategyState.Closing
 
     def active_positions_df(self) -> pd.DataFrame:
         """
         Returns a new dataframe on current active perpetual positions.
         """
-        columns = ["Symbol", "Type", "Entry Price", "Amount", "Leverage", "Unrealized PnL"]
+        columns = ["Symbol", "Type", "Entry Price", "Amount", "Leverage", "Unrealized PnL", "Liquidation Price"]
         data = []
         for pos in self.perp_positions:
             data.append([
@@ -436,7 +487,8 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
                 pos.entry_price,
                 pos.amount,
                 pos.leverage,
-                pos.unrealized_pnl
+                pos.unrealized_pnl,
+                pos.liquidation_price
             ])
 
         return pd.DataFrame(data=data, columns=columns)
@@ -446,30 +498,47 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         Returns a status string formatted to display nicely on terminal. The strings composes of 4 parts: markets,
         assets, spread and warnings(if any).
         """
-        columns = ["Exchange", "Market", "Sell Price", "Buy Price", "Mid Price"]
+
+        columns = ["Exchange", "Market", "Sell Price", "Buy Price", "Mid Price", "Funding Rate"]
         data = []
         for market_info in [self._spot_market_info, self._perp_market_info]:
             market, trading_pair, base_asset, quote_asset = market_info
-            buy_price = await market.get_quote_price(trading_pair, True, self._order_amount)
-            sell_price = await market.get_quote_price(trading_pair, False, self._order_amount)
+            # buy_price = await market.get_quote_price(trading_pair, True, self._order_amount)
+            # sell_price = await market.get_quote_price(trading_pair, False, self._order_amount)
+            buy_price = await market.get_price_for_quote_volume_async(trading_pair, True, self._order_amount)
+            sell_price = await market.get_price_for_quote_volume_async(trading_pair, False, self._order_amount)
+            if isinstance(market, PerpetualDerivativePyBase):
+                rate = f"{(market.get_funding_info(trading_pair).rate * Decimal('100')):.2f}%"
+            else:
+                rate = "N/A"
+
             mid_price = (buy_price + sell_price) / 2
             data.append([
                 market.display_name,
                 trading_pair,
                 float(sell_price),
                 float(buy_price),
-                float(mid_price)
+                float(mid_price),
+                rate
             ])
         markets_df = pd.DataFrame(data=data, columns=columns)
         lines = []
         lines.extend(["", "  Markets:"] + ["    " + line for line in markets_df.to_string(index=False).split("\n")])
+
+        lines.extend(["", "  Info:"])
+        lines.extend(["    " + f"Strategy State: {self._strategy_state.name}"])
+        lines.extend(["    " + f"Amount: {self._stats._total_amount_opened:.2f} / {self._total_amount:.2f}"])
+        lines.extend(["    " + f"Fee Paid: {self._stats._fee_paid:.2f}"])
+        lines.extend(["    " + f"Overall Opening Spread Rate: {self._stats._overall_spread:.2f}"])
+        lines.extend(["    " + f"Spread Earned: {self._stats._spread_earned:.2f}"])
+        lines.extend(["    " + f"Funding Earned: {self._stats._funding_earned:.2f}"])
 
         # See if there're any active positions.
         if len(self.perp_positions) > 0:
             df = self.active_positions_df()
             lines.extend(["", "  Positions:"] + ["    " + line for line in df.to_string(index=False).split("\n")])
         else:
-            lines.extend(["", "  No active positions."])
+            lines.extend(["", "  Positions:"] + ["    " + "No active positions."])
 
         assets_df = self.wallet_balance_data_frame([self._spot_market_info, self._perp_market_info])
         lines.extend(["", "  Assets:"] +
@@ -524,10 +593,17 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         self._ready_to_start = False
 
     def did_complete_buy_order(self, event: BuyOrderCompletedEvent):
-        self.update_complete_order_id_lists(event.order_id)
+        self._completed_buy_order_id = event.order_id
 
     def did_complete_sell_order(self, event: SellOrderCompletedEvent):
-        self.update_complete_order_id_lists(event.order_id)
+        self._completed_sell_order_id = event.order_id
+
+    def did_fill_order(self, order_completed_event: OrderFilledEvent):
+        self._completed_order_fills.append(order_completed_event)
+
+    def dif_fail_order(self, order_completed_event: OrderFilledEvent):
+        self.logger().info(f"Order failed. Order ID: {order_completed_event.order_id}")
+        # TODO: Add logic to handle failed orders
 
     def did_change_position_mode_succeed(self, position_mode_changed_event: PositionModeChangeEvent):
         if position_mode_changed_event.position_mode is PositionMode.ONEWAY:
@@ -546,8 +622,13 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         self._position_mode_ready = False
         self.logger().warning("Cannot continue. Please resolve the issue in the account.")
 
-    def update_complete_order_id_lists(self, order_id: str):
-        if self._strategy_state == StrategyState.Opening:
-            self._completed_opening_order_ids.append(order_id)
-        elif self._strategy_state == StrategyState.Closing:
-            self._completed_closing_order_ids.append(order_id)
+    def did_complete_funding_payment(self, funding_payment_completed_event: FundingPaymentCompletedEvent):
+        self._stats._funding_earned += funding_payment_completed_event.amount
+
+
+# TODO:
+# - Add logic to handle failed orders
+# - Make sure order is completed before exiting
+# - Calculate amount opened based on assets
+# - Persist state
+# - Consider existing positions

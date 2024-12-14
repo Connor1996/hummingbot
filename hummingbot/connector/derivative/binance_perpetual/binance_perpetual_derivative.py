@@ -606,6 +606,7 @@ class BinancePerpetualDerivative(PerpetualDerivativePyBase):
             entry_price = Decimal(position.get("entryPrice"))
             amount = Decimal(position.get("positionAmt"))
             leverage = Decimal(position.get("leverage"))
+            liquidation_price = Decimal(position.get("liquidationPrice"))
             pos_key = self._perpetual_trading.position_key(hb_trading_pair, position_side)
             if amount != 0:
                 _position = Position(
@@ -614,7 +615,8 @@ class BinancePerpetualDerivative(PerpetualDerivativePyBase):
                     unrealized_pnl=unrealized_pnl,
                     entry_price=entry_price,
                     amount=amount,
-                    leverage=leverage
+                    leverage=leverage,
+                    liquidation_price=liquidation_price,
                 )
                 self._perpetual_trading.set_position(pos_key, _position)
             else:
