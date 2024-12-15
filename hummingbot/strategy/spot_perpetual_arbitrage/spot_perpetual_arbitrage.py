@@ -74,10 +74,12 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
                     spot_market_slippage_buffer: Decimal = Decimal("0"),
                     perp_market_slippage_buffer: Decimal = Decimal("0"),
                     next_arbitrage_opening_delay: float = 120,
-                    status_report_interval: float = 10):
+                    status_report_interval: float = 10,
+                    near_liquidation_percent: Decimal = Decimal("0.2")):
         """
         :param spot_market_info: The spot market info
         :param perp_market_info: The perpetual market info
+        :param total_amount: The total amount to use for arbitrage
         :param order_amount: The amount per order
         :param perp_leverage: The leverage level to use on perpetual market
         :param min_opening_arbitrage_pct: The minimum spread to open arbitrage position (e.g. 0.0003 for 0.3%)
@@ -87,6 +89,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         :param perp_market_slippage_buffer: The slipper buffer for perpetual market.
         :param next_arbitrage_opening_delay: The number of seconds to delay before the next arb position can be opened
         :param status_report_interval: Amount of seconds to wait to refresh the status report
+        :param near_liquidation_percent: The percentage of liquidation price to consider closing positions
         """
         self._spot_market_info = spot_market_info
         self._perp_market_info = perp_market_info
@@ -103,6 +106,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         self._ev_loop = asyncio.get_event_loop()
         self._last_timestamp = 0
         self._status_report_interval = status_report_interval
+        self._near_liquidation_percent = near_liquidation_percent
         self._stats = Stats()
         self.add_markets([spot_market_info.market, perp_market_info.market])
 
@@ -235,6 +239,9 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             self.execute_arb_proposal(proposal)
 
     def update_position_action(self):
+        if len(self.perp_positions) == 0 and self._perp_market_info.get_mid_price() > self.perp_positions[0].liquidation_price * (1 - self._near_liquidation_percent):
+            self.logger().info(f"Current price {self._perp_market_info.get_mid_price()} is near liquidation price {self.perp_positions[0].liquidation_price}, closing position.")
+            self._position_action = PositionAction.CLOSE
         if self._total_amount - self._stats._total_amount_opened >= self.order_amount * 2:
             self._position_action = PositionAction.OPEN
         elif self._stats._total_amount_opened > self._total_amount:
@@ -615,8 +622,9 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
     def did_fill_order(self, order_completed_event: OrderFilledEvent):
         self._completed_order_fills.append(order_completed_event)
 
-    def dif_fail_order(self, order_completed_event: OrderFilledEvent):
-        self.logger().info(f"Order failed. Order ID: {order_completed_event.order_id}")
+    def did_fail_order(self, order_completed_event: OrderFilledEvent):
+        self.logger().error(f"Order failed. Order ID: {order_completed_event.order_id}")
+        self._strategy_state = StrategyState.NotReady
         # TODO: Add logic to handle failed orders
 
     def did_change_position_mode_succeed(self, position_mode_changed_event: PositionModeChangeEvent):
@@ -645,3 +653,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
 # - Make sure order is completed before exiting
 # - Persist state
 # - Calculate spread earned
+# - Liquidation
+# - Make amount equal
+# - Make sure close all position
+# - Support negative spread for opening
