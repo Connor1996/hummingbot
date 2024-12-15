@@ -54,6 +54,9 @@ class ConfigTraversalItem:
     field_info: FieldInfo
     type_: Type
 
+    def __hash__(self):
+        return hash((self.depth, self.config_path))
+
 
 class ClientConfigAdapter:
     def __init__(self, hb_config: BaseClientModel):
@@ -222,11 +225,11 @@ class ClientConfigAdapter:
     def decrypt_all_secure_data(self):
         from hummingbot.client.config.security import Security  # avoids circular import
 
-        secure_config_items = (
+        secure_config_items = {
             traversal_item
             for traversal_item in self.traverse()
             if traversal_item.client_field_data is not None and traversal_item.client_field_data.is_secure
-        )
+        }
         for traversal_item in secure_config_items:
             value = traversal_item.value
             if isinstance(value, SecretStr):
