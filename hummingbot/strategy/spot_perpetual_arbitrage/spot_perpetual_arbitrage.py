@@ -387,14 +387,19 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             price=proposal_side.order_price,
         )
 
-        adjusted_candidate_order = budget_checker.adjust_candidate(order_candidate, all_or_none=True)
+        all_or_none = False if self._position_action == PositionAction.CLOSE else True
+        adjusted_candidate_order = budget_checker.adjust_candidate(order_candidate, all_or_none)
 
         if adjusted_candidate_order.amount < order_amount:
-            self.logger().info(
-                f"Cannot arbitrage, {proposal_side.market_info.market.display_name} balance"
-                f" is insufficient to place the order candidate {order_candidate}."
-            )
-            return False
+            if self._position_action == PositionAction.CLOSE:
+                proposal.order_amount = adjusted_candidate_order.amount
+                self.logger().info(f"Adjusting order amount from {order_amount} to {adjusted_candidate_order.amount}")
+            else:
+                self.logger().info(
+                    f"Cannot arbitrage, {proposal_side.market_info.market.display_name} balance"
+                    f" is insufficient to place the order candidate {order_candidate}."
+                )
+                return False
 
         return True
 
@@ -639,3 +644,4 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
 # - Add logic to handle failed orders
 # - Make sure order is completed before exiting
 # - Persist state
+# - Calculate spread earned
