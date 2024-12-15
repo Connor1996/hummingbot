@@ -17,6 +17,7 @@ from hummingbot.core.data_type.order_candidate import OrderCandidate, PerpetualO
 from hummingbot.core.event.events import (
     BuyOrderCompletedEvent,
     FundingPaymentCompletedEvent,
+    MarketOrderFailureEvent,
     OrderFilledEvent,
     PositionModeChangeEvent,
     SellOrderCompletedEvent,
@@ -240,7 +241,9 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
 
     def update_position_action(self):
         if len(self.perp_positions) == 0 and self._perp_market_info.get_mid_price() > self.perp_positions[0].liquidation_price * (1 - self._near_liquidation_percent):
-            self.logger().info(f"Current price {self._perp_market_info.get_mid_price()} is near liquidation price {self.perp_positions[0].liquidation_price}, closing position.")
+            msg = f"Current price {self._perp_market_info.get_mid_price()} is near liquidation price {self.perp_positions[0].liquidation_price}, opening position."
+            self.logger().info(msg)
+            self.notify_hb_app_with_timestamp(msg)
             self._position_action = PositionAction.CLOSE
         if self._total_amount - self._stats._total_amount_opened >= self.order_amount * 2:
             self._position_action = PositionAction.OPEN
@@ -521,8 +524,6 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         data = []
         for market_info in [self._spot_market_info, self._perp_market_info]:
             market, trading_pair, base_asset, quote_asset = market_info
-            # buy_price = await market.get_quote_price(trading_pair, True, self._order_amount)
-            # sell_price = await market.get_quote_price(trading_pair, False, self._order_amount)
             buy_price = await market.get_price_for_quote_volume_async(trading_pair, True, self._order_amount)
             sell_price = await market.get_price_for_quote_volume_async(trading_pair, False, self._order_amount)
             if isinstance(market, PerpetualDerivativePyBase):
@@ -619,11 +620,13 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         self.logger().info(f"Sell order completed. Order ID: {event.order_id}")
         self._completed_sell_order_id = event.order_id
 
-    def did_fill_order(self, order_completed_event: OrderFilledEvent):
-        self._completed_order_fills.append(order_completed_event)
+    def did_fill_order(self, order_filled_event: OrderFilledEvent):
+        self._completed_order_fills.append(order_filled_event)
 
-    def did_fail_order(self, order_completed_event: OrderFilledEvent):
-        self.logger().error(f"Order failed. Order ID: {order_completed_event.order_id}")
+    def did_fail_order(self, order_failed_event: MarketOrderFailureEvent):
+        msg = f"Order failed. Order ID: {order_failed_event.order_id}"
+        self.logger().error(msg)
+        self.notify_hb_app_with_timestamp(msg)
         self._strategy_state = StrategyState.NotReady
         # TODO: Add logic to handle failed orders
 
@@ -653,7 +656,6 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
 # - Make sure order is completed before exiting
 # - Persist state
 # - Calculate spread earned
-# - Liquidation
 # - Make amount equal
 # - Make sure close all position
 # - Support negative spread for opening
