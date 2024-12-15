@@ -16,6 +16,7 @@ from hummingbot.client.config.config_helpers import ClientConfigAdapter
 from hummingbot.client.config.config_var import ConfigVar
 from hummingbot.connector.connector_base import ConnectorBase
 from hummingbot.logger import HummingbotLogger
+from hummingbot.notifier.notifier_base import MsgSource
 
 if TYPE_CHECKING:  # pragma: no cover
     from hummingbot.client.hummingbot_application import HummingbotApplication  # noqa: F401
@@ -521,7 +522,7 @@ class MQTTNotifier(NotifierBase):
             msg_type=NotifyMessage
         )
 
-    def add_msg_to_queue(self, msg: str):
+    def add_msg_to_queue(self, msg: str, msg_source: MsgSource):
         if threading.current_thread() != threading.main_thread():  # pragma: no cover
             self._ev_loop.call_soon_threadsafe(self.add_msg_to_queue, msg)
             return

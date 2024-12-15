@@ -17,7 +17,7 @@ import hummingbot
 from hummingbot.core.utils.async_call_scheduler import AsyncCallScheduler
 from hummingbot.core.utils.async_utils import safe_ensure_future
 from hummingbot.logger import HummingbotLogger
-from hummingbot.notifier.notifier_base import NotifierBase
+from hummingbot.notifier.notifier_base import MsgSource, NotifierBase
 
 import sys; sys.path.insert(0, realpath(join(__file__, "../../../")))
 
@@ -34,6 +34,7 @@ TELEGRAM_MSG_LENGTH_LIMIT = 3000
 
 def authorized_only(handler: Callable[[Any, Bot, Update], None]) -> Callable[..., Any]:
     """ Decorator to check if the message comes from the correct chat_id """
+
     def wrapper(self, *args, **kwargs):
         update = kwargs.get('update') or args[1]
 
@@ -128,7 +129,7 @@ class TelegramNotifier(NotifierBase):
                 pd.set_option('display.max_columns', 500)
                 pd.set_option('display.width', 1000)
 
-                await async_scheduler.call_async(self._hb._handle_command, input_text)
+                await async_scheduler.call_async(self._hb._handle_command, input_text, MsgSource.TELEGRAM)
 
                 # Reset to normal, so that pandas's default autodetect width still works
                 pd.set_option('display.max_rows', 0)
@@ -143,7 +144,11 @@ class TelegramNotifier(NotifierBase):
         for i in range(0, len(arr), n):
             yield arr[i:i + n]
 
-    def add_msg_to_queue(self, msg: str):
+    def add_msg_to_queue(self, msg: str, msg_source: MsgSource):
+        if msg_source == MsgSource.CLI:
+            # If the message is output of a command from CLI, we don't want to send it to telegram
+            return
+
         lines: List[str] = msg.split("\n")
         msg_chunks: List[List[str]] = self._divide_chunks(lines, 30)
         for chunk in msg_chunks:

@@ -39,7 +39,7 @@ from hummingbot.exceptions import ArgumentParserError
 from hummingbot.logger import HummingbotLogger
 from hummingbot.logger.application_warning import ApplicationWarning
 from hummingbot.model.sql_connection_manager import SQLConnectionManager
-from hummingbot.notifier.notifier_base import NotifierBase
+from hummingbot.notifier.notifier_base import MsgSource, NotifierBase
 from hummingbot.remote_iface.mqtt import MQTTGateway
 from hummingbot.strategy.maker_taker_market_pair import MakerTakerMarketPair
 from hummingbot.strategy.market_trading_pair_tuple import MarketTradingPairTuple
@@ -99,6 +99,7 @@ class HummingbotApplication(*commands):
         self.notifiers: List[NotifierBase] = []
         self.kill_switch: Optional[KillSwitch] = None
         self._app_warnings: Deque[ApplicationWarning] = deque()
+        self._command_source: Optional[MsgSource] = None
         self._trading_required: bool = True
         self._last_started_strategy_file: Optional[str] = None
 
@@ -176,9 +177,15 @@ class HummingbotApplication(*commands):
             pass
 
     def notify(self, msg: str):
+        self._notify(msg, self.msg_source)
+
+    def _notify(self, msg: str, source: MsgSource):
         self.app.log(msg)
         for notifier in self.notifiers:
-            notifier.add_msg_to_queue(msg)
+            notifier.add_msg_to_queue(msg, source)
+
+    def strategy_notify(self, msg: str):
+        self._notify(msg, MsgSource.STRATEGY)
 
     def _handle_shortcut(self, command_split):
         shortcuts = self.client_config_map.command_shortcuts
@@ -210,10 +217,11 @@ class HummingbotApplication(*commands):
             return True
         return False
 
-    def _handle_command(self, raw_command: str):
+    def _handle_command(self, raw_command: str, source: MsgSource = MsgSource.CLI):
         # unset to_stop_config flag it triggered before loading any command
         if self.app.to_stop_config:
             self.app.to_stop_config = False
+        self.msg_source = source
 
         raw_command = raw_command.strip()
         # NOTE: Only done for config command

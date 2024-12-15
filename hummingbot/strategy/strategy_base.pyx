@@ -16,6 +16,7 @@ from hummingbot.core.event.events import OrderFilledEvent
 from hummingbot.core.data_type.common import OrderType, PositionAction
 from hummingbot.strategy.order_tracker import OrderTracker
 from hummingbot.connector.derivative_base import DerivativeBase
+from hummingbot.notifier.notifier_base import MsgSource
 
 NaN = float("nan")
 s_decimal_nan = Decimal("NaN")
@@ -654,7 +655,7 @@ cdef class StrategyBase(TimeIterator):
         :param msg: The message to be notified
         """
         from hummingbot.client.hummingbot_application import HummingbotApplication
-        HummingbotApplication.main_application().notify(msg)
+        HummingbotApplication.main_application().strategy_notify(msg)
 
     def notify_hb_app_with_timestamp(self, msg: str):
         """
