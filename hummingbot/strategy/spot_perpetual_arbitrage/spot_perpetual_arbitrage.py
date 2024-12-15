@@ -196,13 +196,12 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             perp = abs(self.perp_positions[0].amount) if len(self.perp_positions) == 1 else s_decimal_zero
             if spot > s_decimal_zero or perp > s_decimal_zero:
                 if abs(spot - perp) / max(spot, perp) <= Decimal("0.0001"):
-                    self.logger().info(f"There is an existing {self._perp_market_info.trading_pair} "
-                                       f"{self.perp_positions[0].position_side.name} position with the same amount {self.perp_positions[0].amount}.")
+                    self.logger().info(f"There is an existing {self._perp_market_info.trading_pair} matched "
+                                       f"position amount and balance of amount {spot}.")
                     self._stats._total_amount_opened = (perp * self._perp_market_info.get_mid_price() + spot * self._spot_market_info.get_mid_price())
                 else:
-                    self.logger().warning(f"There is an existing {self._perp_market_info.trading_pair} "
-                                          f"{self.perp_positions[0].position_side.name} position with unmatched "
-                                          f"position amount {self.perp_positions[0].amount} and balance {self._spot_market_info.base_balance}. "
+                    self.logger().warning(f"There is an existing {self._perp_market_info.trading_pair} unmatched "
+                                          f"position amount {perp} and balance {spot}. "
                                           f"Please manually close out the position before starting this strategy.")
                     return
             self._strategy_state = StrategyState.Ready
@@ -224,9 +223,13 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
 
         proposals = await self.create_base_proposals()
         if self._position_action == PositionAction.CLOSE:
-            proposals = [p for p in proposals if p.profit_pct() >= self._min_closing_arbitrage_pct]
+            near_liquidation = self.near_liquidation()
+            perp_is_buy = False if self.perp_positions[0].amount > 0 else True
+            proposals = [p for p in proposals if p.perp_side.is_buy == perp_is_buy and
+                         (near_liquidation or p.profit_pct() >= self._min_closing_arbitrage_pct)]
         else:
-            proposals = [p for p in proposals if p.profit_pct() >= self._min_opening_arbitrage_pct]
+            # TODO: support negative spread for opening
+            proposals = [p for p in proposals if p.perp_side.is_buy is False and p.profit_pct() >= self._min_opening_arbitrage_pct]
         if len(proposals) == 0:
             return
         proposal = proposals[0]
@@ -239,9 +242,12 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         if self.check_budget_constraint(proposal):
             self.execute_arb_proposal(proposal)
 
+    def near_liquidation(self):
+        return len(self.perp_positions) != 0 and self._perp_market_info.get_mid_price() > self.perp_positions[0].liquidation_price * (1 - self._near_liquidation_percent)
+
     def update_position_action(self):
-        if len(self.perp_positions) == 0 and self._perp_market_info.get_mid_price() > self.perp_positions[0].liquidation_price * (1 - self._near_liquidation_percent):
-            msg = f"Current price {self._perp_market_info.get_mid_price()} is near liquidation price {self.perp_positions[0].liquidation_price}, opening position."
+        if self.near_liquidation():
+            msg = f"Current price {self._perp_market_info.get_mid_price()} is near liquidation price {self.perp_positions[0].liquidation_price}, closing position."
             self.logger().info(msg)
             self.notify_hb_app_with_timestamp(msg)
             self._position_action = PositionAction.CLOSE
@@ -309,21 +315,14 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         prices = await safe_gather(*tasks, return_exceptions=True)
         spot_buy, spot_sell, perp_buy, perp_sell = [*prices]
 
-        spot_buy_perp_sell = ArbProposal(ArbProposalSide(self._spot_market_info, True, spot_buy),
-                                         ArbProposalSide(self._perp_market_info, False, perp_sell),
-                                         self._order_amount / min(spot_buy, perp_sell))
-        spot_sell_perp_buy = ArbProposal(ArbProposalSide(self._spot_market_info, False, spot_sell),
-                                         ArbProposalSide(self._perp_market_info, True, perp_buy),
-                                         self._order_amount / min(spot_sell, perp_buy))
-        if self._position_action == PositionAction.CLOSE:
-            if self.perp_positions[0].amount > 0:
-                proposal = spot_buy_perp_sell
-            else:
-                proposal = spot_sell_perp_buy
-        else:
-            # TODO: support negative spread for opening
-            proposal = spot_buy_perp_sell
-        return [proposal]
+        return [
+            ArbProposal(ArbProposalSide(self._spot_market_info, True, spot_buy),
+                        ArbProposalSide(self._perp_market_info, False, perp_sell),
+                        self._order_amount / min(spot_buy, perp_sell)),
+            ArbProposal(ArbProposalSide(self._spot_market_info, False, spot_sell),
+                        ArbProposalSide(self._perp_market_info, True, perp_buy),
+                        self._order_amount / min(spot_sell, perp_buy))
+        ]
 
     def apply_slippage_buffers(self, proposal: ArbProposal):
         """
@@ -443,6 +442,18 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         )
 
         adjusted_candidate_order = budget_checker.adjust_candidate(order_candidate, all_or_none=True)
+
+        # TODO: check logic of perptual bus
+        # if adjusted_candidate_order.amount < order_amount:
+        #     if self._position_action == PositionAction.CLOSE:
+        #         proposal.order_amount = adjusted_candidate_order.amount
+        #         self.logger().info(f"Adjusting order amount from {order_amount} to {adjusted_candidate_order.amount}")
+        #     else:
+        #         self.logger().info(
+        #             f"Cannot arbitrage, {proposal_side.market_info.market.display_name} balance"
+        #             f" is insufficient to place the order candidate {order_candidate}."
+        #         )
+        #         return False
 
         if adjusted_candidate_order.amount < order_amount:
             self.logger().info(
@@ -659,3 +670,4 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
 # - Make amount equal
 # - Make sure close all position
 # - Support negative spread for opening
+# - opened amount is not correct due to price difference
