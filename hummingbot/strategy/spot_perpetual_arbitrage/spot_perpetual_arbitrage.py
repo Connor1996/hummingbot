@@ -42,7 +42,6 @@ class StrategyState(Enum):
 
 class Stats:
     def __init__(self):
-        self._total_amount_opened = Decimal(0)
         self._fee_paid = Decimal(0)
         self._overall_spread = Decimal(0)
         self._spread_earned = Decimal(0)
@@ -80,8 +79,8 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         """
         :param spot_market_info: The spot market info
         :param perp_market_info: The perpetual market info
-        :param total_amount: The total amount to use for arbitrage
-        :param order_amount: The amount per order
+        :param total_amount: The total amount of base asset to use for arbitrage
+        :param order_amount: The amount of quote asset per order
         :param perp_leverage: The leverage level to use on perpetual market
         :param min_opening_arbitrage_pct: The minimum spread to open arbitrage position (e.g. 0.0003 for 0.3%)
         :param min_closing_arbitrage_pct: The minimum spread to close arbitrage position (e.g. 0.0003 for 0.3%)
@@ -197,8 +196,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             if spot > s_decimal_zero or perp > s_decimal_zero:
                 if abs(spot - perp) / max(spot, perp) <= Decimal("0.0001"):
                     self.logger().info(f"There is an existing {self._perp_market_info.trading_pair} matched "
-                                       f"position amount and balance of amount {spot}.")
-                    self._stats._total_amount_opened = (perp * self._perp_market_info.get_mid_price() + spot * self._spot_market_info.get_mid_price())
+                                       f"position amount {perp} and balance of amount {spot}.")
                 else:
                     self.logger().warning(f"There is an existing {self._perp_market_info.trading_pair} unmatched "
                                           f"position amount {perp} and balance {spot}. "
@@ -251,12 +249,20 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             self.logger().info(msg)
             self.notify_hb_app_with_timestamp(msg)
             self._position_action = PositionAction.CLOSE
-        if self._total_amount - self._stats._total_amount_opened >= self.order_amount * 2:
+        price = self._spot_market_info.get_mid_price()
+        opened = self.total_amount_opened
+        if (self._total_amount - opened) * price >= self.order_amount * 2:
             self._position_action = PositionAction.OPEN
-        elif self._stats._total_amount_opened > self._total_amount:
+        elif opened > self._total_amount:
             self._position_action = PositionAction.CLOSE
         else:
             self._position_action = PositionAction.NIL
+
+    @property
+    def total_amount_opened(self):
+        spot = abs(self._spot_market_info.base_balance)
+        perp = abs(self.perp_positions[0].amount) if len(self.perp_positions) == 1 else s_decimal_zero
+        return spot + perp
 
     def update_strategy_state(self):
         """
@@ -268,8 +274,8 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         self.logger().info("Complete one round. buy order id: %s, sell order id: %s", self._completed_buy_order_id,
                            self._completed_sell_order_id)
 
-        buy_amount = Decimal(0)
-        sell_amount = Decimal(0)
+        buy_volume = Decimal(0)
+        sell_volume = Decimal(0)
         for fill in self._completed_order_fills:
             self._stats._fee_paid += fill.trade_fee.fee_amount_in_token(
                 trading_pair=fill.trading_pair,
@@ -278,21 +284,19 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
                 token="USDC",
             )
             if fill.order_id == self._completed_buy_order_id:
-                buy_amount += fill.amount * fill.price
+                buy_volume += fill.amount * fill.price
             elif fill.order_id == self._completed_sell_order_id:
-                sell_amount += fill.amount * fill.price
+                sell_volume += fill.amount * fill.price
             else:
                 self.logger().warning(f"Unknown order id {fill.order_id} in order fills.")
 
         if self._strategy_state == StrategyState.Opening:
             self._strategy_state = StrategyState.Ready
             # buy spot and sell perp
-            self._stats._total_amount_opened += buy_amount + sell_amount
-            self._stats._overall_spread = (buy_amount - sell_amount) / sell_amount
+            self._stats._overall_spread = (buy_volume - sell_volume) / sell_volume
         elif self._strategy_state == StrategyState.Closing:
             self._strategy_state = StrategyState.Ready
             # sell spot and buy perp
-            self._stats._total_amount_opened -= buy_amount + sell_amount
             self._next_arbitrage_opening_ts = self.current_timestamp + self._next_arbitrage_opening_delay
 
         self._completed_buy_order_id = 0
@@ -555,10 +559,13 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         lines = []
         lines.extend(["", "  Markets:"] + ["    " + line for line in markets_df.to_string(index=False).split("\n")])
 
+        price = self._spot_market_info.get_mid_price()
+        base = self._spot_market_info.base_asset
+        opened = self.total_amount_opened
         lines.extend(["", "  Info:"])
         lines.extend(["    " + f"Strategy State: {self._strategy_state.name}"])
         lines.extend(["    " + f"Position Action: {self._position_action.name}"])
-        lines.extend(["    " + f"Amount: {self._stats._total_amount_opened:.2f} / {self._total_amount:.2f}"])
+        lines.extend(["    " + f"Amount: {opened} {base}({opened * price:.2f}$) / {self._total_amount} {base}({self._total_amount * price:.2f}$)"])
         lines.extend(["    " + f"Fee Paid: {self._stats._fee_paid:.2f}"])
         lines.extend(["    " + f"Overall Opening Spread Rate: {self._stats._overall_spread:.2f}"])
         lines.extend(["    " + f"Spread Earned: {self._stats._spread_earned:.2f}"])
@@ -663,11 +670,9 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
 
 
 # TODO:
-# - Add logic to handle failed orders
 # - Make sure order is completed before exiting
 # - Persist state
 # - Calculate spread earned
-# - Make amount equal
+# - Make amount equal, considering fee
 # - Make sure close all position
 # - Support negative spread for opening
-# - opened amount is not correct due to price difference

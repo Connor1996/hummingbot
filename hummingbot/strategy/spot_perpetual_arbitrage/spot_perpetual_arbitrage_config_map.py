@@ -50,7 +50,7 @@ def perpetual_market_prompt() -> str:
 def order_amount_prompt() -> str:
     trading_pair = spot_perpetual_arbitrage_config_map["spot_market"].value
     base_asset, quote_asset = trading_pair.split("-")
-    return f"What is the amount of {quote_asset} per order? >>> "
+    return f"What is the amount of {base_asset} per order? >>> "
 
 
 def total_amount_prompt() -> str:
