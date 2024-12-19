@@ -195,6 +195,10 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             perp = abs(self.perp_positions[0].amount) if len(self.perp_positions) == 1 else s_decimal_zero
             if spot > s_decimal_zero or perp > s_decimal_zero:
                 if abs(spot - perp) / max(spot, perp) <= Decimal("0.0001"):
+                    if self._spot_market_info.base_balance > 0 and self.perp_positions[0].amount > 0 or \
+                            self._spot_market_info.base_balance < 0 and self.perp_positions[0].amount < 0:
+                        self.logger().info("unmatched position type")
+                        return
                     self.logger().info(f"There is an existing {self._perp_market_info.trading_pair} matched "
                                        f"position amount {perp} and balance of amount {spot}.")
                 else:
@@ -205,7 +209,12 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             self._strategy_state = StrategyState.Ready
 
         if self._strategy_state != StrategyState.NotReady and (self._main_task is None or self._main_task.done()):
-            self._main_task = safe_ensure_future(self.main(timestamp))
+            try:
+                self._main_task = safe_ensure_future(self.main(timestamp))
+            except Exception as e:
+                msg = f"Error during main task: {e}"
+                self.logger().error(msg, exc_info=True)
+                self.notify_hb_app_with_timestamp(msg)
 
     async def main(self, timestamp):
         """
@@ -241,7 +250,11 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             self.execute_arb_proposal(proposal)
 
     def near_liquidation(self):
-        return len(self.perp_positions) != 0 and self._perp_market_info.get_mid_price() > self.perp_positions[0].liquidation_price * (1 - self._near_liquidation_percent)
+        if len(self.perp_positions) != 0:
+            if self.perp_positions[0].liquidation_price is None:
+                return False
+            return self._perp_market_info.get_mid_price() > (self.perp_positions[0].liquidation_price * (1 - self._near_liquidation_percent))
+        return False
 
     def update_position_action(self):
         if self.near_liquidation():
@@ -260,9 +273,9 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
 
     @property
     def total_amount_opened(self):
-        spot = abs(self._spot_market_info.base_balance)
-        perp = abs(self.perp_positions[0].amount) if len(self.perp_positions) == 1 else s_decimal_zero
-        return spot + perp
+        spot = self._spot_market_info.base_balance
+        perp = self.perp_positions[0].amount if len(self.perp_positions) == 1 else s_decimal_zero
+        return abs(spot - perp)
 
     def update_strategy_state(self):
         """
@@ -565,7 +578,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         lines.extend(["", "  Info:"])
         lines.extend(["    " + f"Strategy State: {self._strategy_state.name}"])
         lines.extend(["    " + f"Position Action: {self._position_action.name}"])
-        lines.extend(["    " + f"Amount: {opened} {base}({opened * price:.2f}$) / {self._total_amount} {base}({self._total_amount * price:.2f}$)"])
+        lines.extend(["    " + f"Amount: {opened:.2f} {base}({opened * price:.2f}$) / {self._total_amount} {base}({self._total_amount * price:.2f}$)"])
         lines.extend(["    " + f"Fee Paid: {self._stats._fee_paid:.2f}"])
         lines.extend(["    " + f"Overall Opening Spread Rate: {self._stats._overall_spread:.2f}"])
         lines.extend(["    " + f"Spread Earned: {self._stats._spread_earned:.2f}"])
