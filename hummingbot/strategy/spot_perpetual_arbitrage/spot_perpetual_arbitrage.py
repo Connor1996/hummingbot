@@ -262,6 +262,8 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             self.logger().info(msg)
             self.notify_hb_app_with_timestamp(msg)
             self._position_action = PositionAction.CLOSE
+            return
+
         price = self._spot_market_info.get_mid_price()
         opened = self.total_amount_opened
         if (self._total_amount - opened) * price >= self.order_amount * 2:
