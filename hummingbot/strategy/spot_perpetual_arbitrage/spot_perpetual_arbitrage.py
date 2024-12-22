@@ -461,13 +461,13 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         market_info = proposal_side.market_info
         budget_checker = market_info.market.budget_checker
 
-        position_close = False
-        if self.perp_positions and abs(self.perp_positions[0].amount) == order_amount:
-            perp_side = proposal.perp_side
-            cur_perp_pos_is_buy = True if self.perp_positions[0].amount > 0 else False
-            if perp_side != cur_perp_pos_is_buy:
-                position_close = True
-
+        # position_close = False
+        # if self.perp_positions and abs(self.perp_positions[0].amount) <= order_amount:
+        #     perp_side = proposal.perp_side
+        #     cur_perp_pos_is_buy = True if self.perp_positions[0].amount > 0 else False
+        #     if perp_side.is_buy != cur_perp_pos_is_buy:
+        #         position_close = True
+        position_close = self._position_action == PositionAction.CLOSE
         order_candidate = PerpetualOrderCandidate(
             trading_pair=market_info.trading_pair,
             is_maker=False,
@@ -479,7 +479,8 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             position_close=position_close,
         )
 
-        adjusted_candidate_order = budget_checker.adjust_candidate(order_candidate, all_or_none=True)
+        all_or_none = False if position_close else True
+        adjusted_candidate_order = budget_checker.adjust_candidate(order_candidate, all_or_none)
 
         # TODO: check logic of perptual bus
         # if adjusted_candidate_order.amount < order_amount:
@@ -497,6 +498,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             self.logger().info(
                 f"Cannot arbitrage, {proposal_side.market_info.market.display_name} balance"
                 f" is insufficient to place the order candidate {order_candidate}."
+                f" Adjusted order amount from {order_amount} to {adjusted_candidate_order.amount}."
             )
             return False
 
