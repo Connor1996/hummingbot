@@ -38,8 +38,8 @@ bpm_logger = None
 class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
     web_utils = web_utils
 
-    SHORT_POLL_INTERVAL = 5.0
-    LONG_POLL_INTERVAL = 12.0
+    SHORT_POLL_INTERVAL = 1.0
+    LONG_POLL_INTERVAL = 3.0
 
     def __init__(
             self,
@@ -774,6 +774,7 @@ class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
                     for order_msg in results:
                         self._process_order_message(order_msg)
                 elif channel == CONSTANTS.USEREVENT_ENDPOINT_NAME:
+                    # self.logger().info(f"Received user event message: {results}")
                     if "fills" in results:
                         for trade_msg in results["fills"]:
                             await self._process_trade_message(trade_msg)
