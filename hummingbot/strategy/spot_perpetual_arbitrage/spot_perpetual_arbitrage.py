@@ -181,9 +181,9 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             self.logger().info("Trading started.")
             self._trading_started = True
 
-            if not self.check_budget_available():
-                self.logger().info("Trading not possible.")
-                return
+            # if not self.check_budget_available():
+            #     self.logger().info("Trading not possible.")
+            #     return
 
             if self._perp_market_info.market.position_mode != PositionMode.ONEWAY or \
                     len(self.perp_positions) > 1:
