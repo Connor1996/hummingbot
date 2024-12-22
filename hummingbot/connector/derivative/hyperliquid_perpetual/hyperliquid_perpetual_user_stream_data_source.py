@@ -75,7 +75,7 @@ class HyperliquidPerpetualUserStreamDataSource(UserStreamTrackerDataSource):
             orders_change_payload = {
                 "method": "subscribe",
                 "subscription": {
-                    "type": "orderUpdates",
+                    "type": CONSTANTS.USER_ORDERS_ENDPOINT_NAME,
                     "user": self._connector.hyperliquid_perpetual_address,
                 }
             }
@@ -86,7 +86,7 @@ class HyperliquidPerpetualUserStreamDataSource(UserStreamTrackerDataSource):
             positions_payload = {
                 "method": "subscribe",
                 "subscription": {
-                    "type": "user",
+                    "type": CONSTANTS.USEREVENT_ENDPOINT_NAME,
                     "user": self._connector.hyperliquid_perpetual_address,
                 }
             }

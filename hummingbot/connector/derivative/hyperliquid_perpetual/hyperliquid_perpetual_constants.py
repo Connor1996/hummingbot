@@ -70,7 +70,8 @@ FUNDING_INFO_ENDPOINT_NAME = "activeAssetCtx"
 
 
 USER_ORDERS_ENDPOINT_NAME = "orderUpdates"
-USEREVENT_ENDPOINT_NAME = "user"
+# USEREVENT_ENDPOINT_NAME = "userEvents"
+USEREVENT_ENDPOINT_NAME = "userFills"
 
 # Order Statuses
 ORDER_STATE = {
