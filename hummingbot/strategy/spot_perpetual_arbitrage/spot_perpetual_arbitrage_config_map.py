@@ -143,5 +143,5 @@ spot_perpetual_arbitrage_config_map = {
         prompt="How long do you want the strategy to wait before opening the next arbitrage position (in seconds)?",
         type_str="float",
         validator=lambda v: validate_decimal(v, min_value=0, inclusive=False),
-        default=120),
+        default=3),
 }

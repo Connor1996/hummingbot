@@ -224,6 +224,8 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         if self._strategy_state in (StrategyState.Opening, StrategyState.Closing):
             self.logger().info("Waiting for orders to complete.")
             return
+        if self._next_arbitrage_opening_ts > timestamp:
+            return
         self.update_position_action()
         if self._position_action == PositionAction.NIL:
             return
@@ -288,6 +290,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             return
         self.logger().info("Complete one round. buy order id: %s, sell order id: %s", self._completed_buy_order_id,
                            self._completed_sell_order_id)
+        self._next_arbitrage_opening_ts = self.current_timestamp + self._next_arbitrage_opening_delay
 
         buy_volume = Decimal(0)
         sell_volume = Decimal(0)
