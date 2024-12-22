@@ -144,4 +144,11 @@ spot_perpetual_arbitrage_config_map = {
         type_str="float",
         validator=lambda v: validate_decimal(v, min_value=0, inclusive=False),
         default=3),
+    "near_liquidation_pct": ConfigVar(
+        key="near_liquidation_pct",
+        prompt="What percentage of the liquidation price do you want to close the position at? (Enter 1 to indicate 1%)",
+        type_str="decimal",
+        validator=lambda v: validate_decimal(v, Decimal(0), 90, inclusive=False),
+        default=Decimal("0.1"),
+        prompt_on_new=True),
 }

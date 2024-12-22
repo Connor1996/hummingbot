@@ -75,7 +75,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
                     perp_market_slippage_buffer: Decimal = Decimal("0"),
                     next_arbitrage_opening_delay: float = 120,
                     status_report_interval: float = 10,
-                    near_liquidation_percent: Decimal = Decimal("0.2")):
+                    near_liquidation_pct: Decimal = Decimal("0.1")):
         """
         :param spot_market_info: The spot market info
         :param perp_market_info: The perpetual market info
@@ -89,7 +89,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         :param perp_market_slippage_buffer: The slipper buffer for perpetual market.
         :param next_arbitrage_opening_delay: The number of seconds to delay before the next arb position can be opened
         :param status_report_interval: Amount of seconds to wait to refresh the status report
-        :param near_liquidation_percent: The percentage of liquidation price to consider closing positions
+        :param near_liquidation_pct: The percentage of liquidation price to consider closing positions
         """
         self._spot_market_info = spot_market_info
         self._perp_market_info = perp_market_info
@@ -106,7 +106,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         self._ev_loop = asyncio.get_event_loop()
         self._last_timestamp = 0
         self._status_report_interval = status_report_interval
-        self._near_liquidation_percent = near_liquidation_percent
+        self._near_liquidation_pct = near_liquidation_pct
         self._stats = Stats()
         self.add_markets([spot_market_info.market, perp_market_info.market])
 
@@ -251,12 +251,27 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         if self.check_budget_constraint(proposal):
             self.execute_arb_proposal(proposal)
 
-    def near_liquidation(self):
+    def near_liquidation_price(self):
         if len(self.perp_positions) != 0:
             if self.perp_positions[0].liquidation_price is None:
-                return False
-            return self._perp_market_info.get_mid_price() > (self.perp_positions[0].liquidation_price * (1 - self._near_liquidation_percent))
-        return False
+                return None
+            return self.perp_positions[0].liquidation_price * (1 - self._near_liquidation_pct)
+        return None
+
+    def near_liquidation(self):
+        liq_price = self.near_liquidation_price()
+        return liq_price is not None and self._perp_market_info.get_mid_price() > liq_price
+
+    def near_liquidation_buffer_price(self):
+        if len(self.perp_positions) != 0:
+            if self.perp_positions[0].liquidation_price is None:
+                return None
+            return self.perp_positions[0].liquidation_price * (1 - self._near_liquidation_pct * Decimal(1.5))
+        return None
+
+    def near_liquidation_buffer(self):
+        liq_buffer_price = self.near_liquidation_buffer_price()
+        return liq_buffer_price is not None and self._perp_market_info.get_mid_price() > liq_buffer_price
 
     def update_position_action(self):
         if self.near_liquidation():
@@ -268,7 +283,8 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
 
         price = self._spot_market_info.get_mid_price()
         opened = self.total_amount_opened
-        if (self._total_amount - opened) * price >= self.order_amount * 2:
+        # TODO: make sure don't back and forth
+        if (self._total_amount - opened) * price >= self.order_amount * 2 and not self.near_liquidation_buffer():
             self._position_action = PositionAction.OPEN
         elif opened > self._total_amount:
             self._position_action = PositionAction.CLOSE
@@ -588,6 +604,8 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         lines.extend(["    " + f"Overall Opening Spread Rate: {self._stats._overall_spread:.2f}"])
         lines.extend(["    " + f"Spread Earned: {self._stats._spread_earned:.2f}"])
         lines.extend(["    " + f"Funding Earned: {self._stats._funding_earned:.2f}"])
+        lines.extend(["    " + f"Near Liquidation: {self.near_liquidation_price()}"])
+        lines.extend(["    " + f"Near Liquidation Buffer: {self.near_liquidation_buffer_price()}"])
 
         # See if there're any active positions.
         if len(self.perp_positions) > 0:
