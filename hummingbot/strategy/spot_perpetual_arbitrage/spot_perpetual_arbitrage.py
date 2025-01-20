@@ -117,6 +117,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         self._strategy_state = StrategyState.NotReady
         self._position_action = PositionAction.OPEN
         self._last_arb_op_reported_ts = 0
+        self._insufficient_balance = False
         self._position_mode_ready = False
         self._position_mode_not_ready_counter = 0
         self._trading_started = False
@@ -249,6 +250,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             self._last_arb_op_reported_ts = self.current_timestamp
         self.apply_slippage_buffers(proposal)
         if self.check_budget_constraint(proposal):
+            self._insufficient_balance = False
             self.execute_arb_proposal(proposal)
 
     def near_liquidation_price(self):
@@ -442,10 +444,12 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
                 proposal.order_amount = adjusted_candidate_order.amount
                 self.logger().info(f"Adjusting order amount from {order_amount} to {adjusted_candidate_order.amount}")
             else:
-                self.logger().info(
-                    f"Cannot arbitrage, {proposal_side.market_info.market.display_name} balance"
-                    f" is insufficient to place the order candidate {order_candidate}."
-                )
+                if not self._insufficient_balance:
+                    self.logger().info(
+                        f"Cannot arbitrage, {proposal_side.market_info.market.display_name} balance"
+                        f" is insufficient to place the order candidate {order_candidate}."
+                    )
+                    self._insufficient_balance = True
                 return False
 
         return True
@@ -495,11 +499,13 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         #         return False
 
         if adjusted_candidate_order.amount < order_amount:
-            self.logger().info(
-                f"Cannot arbitrage, {proposal_side.market_info.market.display_name} balance"
-                f" is insufficient to place the order candidate {order_candidate}."
-                f" Adjusted order amount from {order_amount} to {adjusted_candidate_order.amount}."
-            )
+            if not self._insufficient_balance:
+                self.logger().info(
+                    f"Cannot arbitrage, {proposal_side.market_info.market.display_name} balance"
+                    f" is insufficient to place the order candidate {order_candidate}."
+                    f" Adjusted order amount from {order_amount} to {adjusted_candidate_order.amount}."
+                )
+                self._insufficient_balance = True
             return False
 
         return True
