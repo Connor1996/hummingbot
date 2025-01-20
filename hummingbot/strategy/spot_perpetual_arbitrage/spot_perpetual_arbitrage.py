@@ -195,7 +195,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             spot = abs(self._spot_market_info.base_balance)
             perp = abs(self.perp_positions[0].amount) if len(self.perp_positions) == 1 else s_decimal_zero
             if spot > s_decimal_zero or perp > s_decimal_zero:
-                if abs(spot - perp) / max(spot, perp) <= Decimal("0.0001"):
+                if abs(spot - perp) / max(spot, perp) <= Decimal("0.01"):
                     if self._spot_market_info.base_balance > 0 and self.perp_positions[0].amount > 0 or \
                             self._spot_market_info.base_balance < 0 and self.perp_positions[0].amount < 0:
                         self.logger().info("unmatched position type")
@@ -227,19 +227,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             return
         if self._next_arbitrage_opening_ts > timestamp:
             return
-        self.update_position_action()
-        if self._position_action == PositionAction.NIL:
-            return
-
-        proposals = await self.create_base_proposals()
-        if self._position_action == PositionAction.CLOSE:
-            near_liquidation = self.near_liquidation()
-            perp_is_buy = False if self.perp_positions[0].amount > 0 else True
-            proposals = [p for p in proposals if p.perp_side.is_buy == perp_is_buy and
-                         (near_liquidation or p.profit_pct() >= self._min_closing_arbitrage_pct)]
-        else:
-            # TODO: support negative spread for opening
-            proposals = [p for p in proposals if p.perp_side.is_buy is False and p.profit_pct() >= self._min_opening_arbitrage_pct]
+        proposals = await self.get_proposal_and_update_position_action()
         if len(proposals) == 0:
             return
         proposal = proposals[0]
@@ -275,23 +263,36 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         liq_buffer_price = self.near_liquidation_buffer_price()
         return liq_buffer_price is not None and self._perp_market_info.get_mid_price() > liq_buffer_price
 
-    def update_position_action(self):
+    async def get_proposal_and_update_position_action(self) -> List[ArbProposal]:
+        proposals = await self.create_base_proposals()
+        perp_is_buy = False if self.perp_positions[0].amount > 0 else True
+
         if self.near_liquidation():
             msg = f"Current price {self._perp_market_info.get_mid_price()} is near liquidation price {self.perp_positions[0].liquidation_price}, closing position."
             self.logger().info(msg)
             self.notify_hb_app_with_timestamp(msg)
             self._position_action = PositionAction.CLOSE
-            return
+            return [p for p in proposals if p.perp_side.is_buy == perp_is_buy]
+
+        close_proposals = [p for p in proposals if p.perp_side.is_buy == perp_is_buy and
+                           p.profit_pct() >= self._min_closing_arbitrage_pct]
+        open_proposals = [p for p in proposals if p.perp_side.is_buy is False and p.profit_pct() >= self._min_opening_arbitrage_pct]
 
         price = self._spot_market_info.get_mid_price()
         opened = self.total_amount_opened
-        # TODO: make sure don't back and forth
-        if (self._total_amount - opened) * price >= self.order_amount * 2 and not self.near_liquidation_buffer():
-            self._position_action = PositionAction.OPEN
-        elif opened > self._total_amount:
+        # Already opened and min closing arbitrage pct is met
+        # Or opened amount is larger than expected
+        if (opened * price >= self.order_amount * 2 and len(close_proposals) != 0) or (opened > self._total_amount):
             self._position_action = PositionAction.CLOSE
+            return close_proposals
+        # TODO: make sure don't back and forth
+        # Requested amount is not met yet and not near liquidation
+        elif (self._total_amount - opened) * price >= self.order_amount * 2 and not self.near_liquidation_buffer():
+            self._position_action = PositionAction.OPEN
+            return open_proposals
         else:
             self._position_action = PositionAction.NIL
+            return []
 
     @property
     def total_amount_opened(self):

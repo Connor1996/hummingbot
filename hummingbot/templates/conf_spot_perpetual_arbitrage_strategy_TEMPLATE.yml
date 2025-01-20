@@ -39,3 +39,5 @@ perpetual_market_slippage_buffer: null
 
 # cool off period between arbitrage cycles
 next_arbitrage_opening_delay: null
+
+near_liquidation_pct: null
