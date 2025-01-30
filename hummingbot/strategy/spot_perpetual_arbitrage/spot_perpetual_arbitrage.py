@@ -259,6 +259,17 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             return self.perp_positions[0].liquidation_price * (1 - self._near_liquidation_pct * Decimal(1.5))
         return None
 
+    def near_liquidation_emergent(self):
+        liq_price_emergent = self.near_liquidation_emergent_price()
+        return liq_price_emergent is not None and self._perp_market_info.get_mid_price() > liq_price_emergent
+
+    def near_liquidation_emergent_price(self):
+        if len(self.perp_positions) != 0:
+            if self.perp_positions[0].liquidation_price is None:
+                return None
+            return self.perp_positions[0].liquidation_price * (1 - self._near_liquidation_pct * Decimal(0.5))
+        return None
+
     def near_liquidation_buffer(self):
         liq_buffer_price = self.near_liquidation_buffer_price()
         return liq_buffer_price is not None and self._perp_market_info.get_mid_price() > liq_buffer_price
@@ -272,7 +283,8 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             self.logger().info(msg)
             self.notify_hb_app_with_timestamp(msg)
             self._position_action = PositionAction.CLOSE
-            return [p for p in proposals if p.perp_side.is_buy == perp_is_buy]
+            return [p for p in proposals if p.perp_side.is_buy == perp_is_buy and
+                    (self.near_liquidation_emergent or p.profit_pct() >= self._min_closing_arbitrage_pct)]
 
         close_proposals = [p for p in proposals if p.perp_side.is_buy == perp_is_buy and
                            p.profit_pct() >= self._min_closing_arbitrage_pct]
@@ -615,6 +627,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         lines.extend(["    " + f"Funding Earned: {self._stats._funding_earned:.2f}"])
         lines.extend(["    " + f"Near Liquidation: {self.near_liquidation_price()}"])
         lines.extend(["    " + f"Near Liquidation Buffer: {self.near_liquidation_buffer_price()}"])
+        lines.extend(["    " + f"Near Liquidation Emergent: {self.near_liquidation_emergent_price()}"])
 
         # See if there're any active positions.
         if len(self.perp_positions) > 0:
