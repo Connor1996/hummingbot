@@ -585,7 +585,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             buy_price = await market.get_price_for_quote_volume_async(trading_pair, True, self._order_amount)
             sell_price = await market.get_price_for_quote_volume_async(trading_pair, False, self._order_amount)
             if isinstance(market, PerpetualDerivativePyBase):
-                rate = f"{(market.get_funding_info(trading_pair).rate * Decimal('100')):.2f}%"
+                rate = f"{(market.get_funding_info(trading_pair).rate * Decimal(365 * 24 * 100)):.2f}%"
             else:
                 rate = "N/A"
 
