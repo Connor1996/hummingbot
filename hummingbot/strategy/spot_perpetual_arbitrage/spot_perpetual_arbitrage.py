@@ -43,7 +43,7 @@ class StrategyState(Enum):
 class Stats:
     def __init__(self):
         self._fee_paid = Decimal(0)
-        self._overall_spread = Decimal(0)
+        self._overall_opening_spread_rate = Decimal(0)
         self._spread_earned = Decimal(0)
         self._funding_earned = Decimal(0)
 
@@ -319,12 +319,13 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
 
         if self._completed_buy_order_id == 0 or self._completed_sell_order_id == 0:
             return
-        self.logger().info("Complete one round. buy order id: %s, sell order id: %s", self._completed_buy_order_id,
-                           self._completed_sell_order_id)
+
         self._next_arbitrage_opening_ts = self.current_timestamp + self._next_arbitrage_opening_delay
 
         buy_volume = Decimal(0)
         sell_volume = Decimal(0)
+        buy_amount = Decimal(0)
+        sell_amount = Decimal(0)
         for fill in self._completed_order_fills:
             self._stats._fee_paid += fill.trade_fee.fee_amount_in_token(
                 trading_pair=fill.trading_pair,
@@ -338,15 +339,20 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
                 sell_volume += fill.amount * fill.price
             else:
                 self.logger().warning(f"Unknown order id {fill.order_id} in order fills.")
-
+        spread = sell_volume - buy_volume
+        price = self._spot_market_info.get_mid_price()
+        self.logger().info(f"Complete one round. spread: {spread}, spread rate: {(spread/buy_volume) * Decimal(100)}:.2f%. buy order id: {self._completed_buy_order_id}, sell order id: {self._completed_sell_order_id}")
         if self._strategy_state == StrategyState.Opening:
             self._strategy_state = StrategyState.Ready
             # buy spot and sell perp
-            self._stats._overall_spread = (buy_volume - sell_volume) / sell_volume
+            opening_spread = self._stats._overall_opening_spread_rate * (self._spot_market_info.base_balance - buy_amount) * price
+            self._stats._overall_opening_spread_rate = (opening_spread + spread) / (self._spot_market_info.base_balance * price)
         elif self._strategy_state == StrategyState.Closing:
             self._strategy_state = StrategyState.Ready
             # sell spot and buy perp
             self._next_arbitrage_opening_ts = self.current_timestamp + self._next_arbitrage_opening_delay
+            opened_spread = self._stats._overall_opening_spread_rate * sell_amount * price
+            self._stats._spread_earned += opened_spread + spread
 
         self._completed_buy_order_id = 0
         self._completed_sell_order_id = 0
@@ -622,7 +628,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         lines.extend(["    " + f"Position Action: {self._position_action.name}"])
         lines.extend(["    " + f"Amount: {opened:.2f} {base}({opened * price:.2f}$) / {self._total_amount} {base}({self._total_amount * price:.2f}$)"])
         lines.extend(["    " + f"Fee Paid: {self._stats._fee_paid:.2f}"])
-        lines.extend(["    " + f"Overall Opening Spread Rate: {self._stats._overall_spread:.2f}"])
+        lines.extend(["    " + f"Overall Opening Spread Rate: {self._stats._overall_opening_spread_rate:.2f}"])
         lines.extend(["    " + f"Spread Earned: {self._stats._spread_earned:.2f}"])
         lines.extend(["    " + f"Funding Earned: {self._stats._funding_earned:.2f}"])
         lines.extend(["    " + f"Near Liquidation: {self.near_liquidation_price()}"])
@@ -689,11 +695,11 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         self._strategy_state = StrategyState.NotReady
 
     def did_complete_buy_order(self, event: BuyOrderCompletedEvent):
-        self.logger().info(f"Buy order completed. Order ID: {event.order_id}")
+        # self.logger().info(f"Buy order completed. Order ID: {event.order_id}")
         self._completed_buy_order_id = event.order_id
 
     def did_complete_sell_order(self, event: SellOrderCompletedEvent):
-        self.logger().info(f"Sell order completed. Order ID: {event.order_id}")
+        # self.logger().info(f"Sell order completed. Order ID: {event.order_id}")
         self._completed_sell_order_id = event.order_id
 
     def did_fill_order(self, order_filled_event: OrderFilledEvent):
