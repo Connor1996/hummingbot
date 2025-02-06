@@ -192,21 +192,21 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
                 self._perp_market_info.market.set_position_mode(PositionMode.ONEWAY)
                 return
 
-            spot = abs(self._spot_market_info.base_balance)
-            perp = abs(self.perp_positions[0].amount) if len(self.perp_positions) == 1 else s_decimal_zero
-            if spot > s_decimal_zero or perp > s_decimal_zero:
-                if abs(spot - perp) / max(spot, perp) <= Decimal("0.01"):
-                    if self._spot_market_info.base_balance > 0 and self.perp_positions[0].amount > 0 or \
-                            self._spot_market_info.base_balance < 0 and self.perp_positions[0].amount < 0:
-                        self.logger().info("unmatched position type")
-                        return
-                    self.logger().info(f"There is an existing {self._perp_market_info.trading_pair} matched "
-                                       f"position amount {perp} and balance of amount {spot}.")
-                else:
-                    self.logger().warning(f"There is an existing {self._perp_market_info.trading_pair} unmatched "
-                                          f"position amount {perp} and balance {spot}. "
-                                          f"Please manually close out the position before starting this strategy.")
-                    return
+            # spot = abs(self._spot_market_info.base_balance)
+            # perp = abs(self.perp_positions[0].amount) if len(self.perp_positions) == 1 else s_decimal_zero
+            # if spot > s_decimal_zero or perp > s_decimal_zero:
+            #     if abs(spot - perp) / max(spot, perp) <= Decimal("0.01"):
+            #         if self._spot_market_info.base_balance > 0 and self.perp_positions[0].amount > 0 or \
+            #                 self._spot_market_info.base_balance < 0 and self.perp_positions[0].amount < 0:
+            #             self.logger().info("unmatched position type")
+            #             return
+            #         self.logger().info(f"There is an existing {self._perp_market_info.trading_pair} matched "
+            #                            f"position amount {perp} and balance of amount {spot}.")
+            #     else:
+            #         self.logger().warning(f"There is an existing {self._perp_market_info.trading_pair} unmatched "
+            #                               f"position amount {perp} and balance {spot}. "
+            #                               f"Please manually close out the position before starting this strategy.")
+            #         return
             self._strategy_state = StrategyState.Ready
 
         if self._strategy_state != StrategyState.NotReady and (self._main_task is None or self._main_task.done()):
