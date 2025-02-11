@@ -341,7 +341,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
                 self.logger().warning(f"Unknown order id {fill.order_id} in order fills.")
         spread = sell_volume - buy_volume
         price = self._spot_market_info.get_mid_price()
-        self.logger().info(f"Complete one round. spread: {spread}, spread rate: {(spread/buy_volume) * Decimal(100)}:.2f%. buy order id: {self._completed_buy_order_id}, sell order id: {self._completed_sell_order_id}")
+        self.logger().info(f"Complete one round. spread: {spread}, spread rate: {(spread/buy_volume) * Decimal(100):.2f}%. buy order id: {self._completed_buy_order_id}, sell order id: {self._completed_sell_order_id}")
         if self._strategy_state == StrategyState.Opening:
             self._strategy_state = StrategyState.Ready
             # buy spot and sell perp
@@ -628,7 +628,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         lines.extend(["    " + f"Position Action: {self._position_action.name}"])
         lines.extend(["    " + f"Amount: {opened:.2f} {base}({opened * price:.2f}$) / {self._total_amount} {base}({self._total_amount * price:.2f}$)"])
         lines.extend(["    " + f"Fee Paid: {self._stats._fee_paid:.2f}"])
-        lines.extend(["    " + f"Overall Opening Spread Rate: {self._stats._overall_opening_spread_rate:.2f}"])
+        lines.extend(["    " + f"Overall Opening Spread Rate: {100 * self._stats._overall_opening_spread_rate:.2f}%"])
         lines.extend(["    " + f"Spread Earned: {self._stats._spread_earned:.2f}"])
         lines.extend(["    " + f"Funding Earned: {self._stats._funding_earned:.2f}"])
         lines.extend(["    " + f"Near Liquidation: {self.near_liquidation_price()}"])
