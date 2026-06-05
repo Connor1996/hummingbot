@@ -62,7 +62,7 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
                                                     max_price=200,
                                                     price_step_size=1,
                                                     volume_step_size=10)
-        self.spot_connector.set_balance(base_asset, 5)
+        self.spot_connector.set_balance(base_asset, 0)
         self.spot_connector.set_balance(quote_asset, 500)
         self.spot_connector.set_quantization_param(
             QuantizationParams(
@@ -156,7 +156,7 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         """
 
         self.strategy._position_mode_ready = True
-        self.strategy._extra_spot_base_amount = Decimal("4")
+        self.strategy._extra_spot_base_amount = Decimal("1")
         self.strategy._total_amount = Decimal("1")
         self.clock.add_iterator(self.strategy)
         self.perp_connector._account_positions[trading_pair] = Position(
@@ -171,8 +171,9 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         self.assertTrue(self._is_logged("INFO", "Markets are ready."))
         self.assertTrue(self._is_logged("INFO", "Trading started."))
         self.assertTrue(self._is_logged("INFO", f"There is an existing {trading_pair} matched position amount 1 "
-                                                f"and strategy spot balance 1. Ignoring configured extra spot amount 4."))
-        self.assertEqual(Decimal("1"), self.strategy.strategy_spot_base_balance)
+                                                f"and total spot balance 1 including extra spot amount 1."))
+        self.assertEqual(Decimal("0"), self.strategy.spot_connector_base_balance)
+        self.assertEqual(Decimal("1"), self.strategy.total_spot_base_balance)
         self.assertEqual(Decimal("1"), self.strategy.total_amount_opened)
         asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.01))
         self.clock.backtest_til(self.start_timestamp + 2)
@@ -183,6 +184,7 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         strategy order amount
         """
         self.strategy._position_mode_ready = True
+        self.strategy._extra_spot_base_amount = Decimal("5")
         self.clock.add_iterator(self.strategy)
         self.perp_connector._account_positions[trading_pair] = Position(
             trading_pair,
@@ -196,7 +198,7 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         self.assertTrue(self._is_logged("INFO", "Markets are ready."))
         self.assertFalse(self._is_logged("INFO", "Trading started."))
         self.assertTrue(self._is_logged("WARNING", f"There is an existing {trading_pair} unmatched position amount 10 "
-                                                   f"and strategy spot balance 5."))
+                                                   f"and total spot balance 5 including extra spot amount 5."))
         asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.01))
         self.clock.backtest_til(self.start_timestamp + 2)
         self.assertEqual(StrategyState.NotReady, self.strategy.strategy_state)
@@ -343,6 +345,26 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         self.strategy._position_action = PositionAction.CLOSE
         self.assertTrue(self.strategy.check_budget_constraint(proposal))
 
+    def test_close_budget_does_not_use_external_spot_account(self):
+        proposal = ArbProposal(ArbProposalSide(self.spot_market_info, False, Decimal("100")),
+                               ArbProposalSide(self.perp_market_info, True, Decimal("100")),
+                               Decimal("1"))
+        self.spot_connector.set_balance(base_asset, 0)
+        self.strategy._extra_spot_base_amount = Decimal("1")
+        self.perp_connector._account_positions[trading_pair] = Position(
+            trading_pair,
+            PositionSide.SHORT,
+            Decimal("0"),
+            Decimal("95"),
+            Decimal("-1"),
+            self.perp_connector.get_leverage(trading_pair)
+        )
+        self.strategy._position_action = PositionAction.CLOSE
+
+        self.assertFalse(self.strategy.check_budget_constraint(proposal))
+        self.assertEqual(Decimal("0"), proposal.order_amount)
+        self.assertTrue(self._is_logged("INFO", "Extra spot amount 1 HBOT is held outside this connector."))
+
     def test_no_arbitrage_opportunity(self):
         self.perp_connector.set_balanced_order_book(trading_pair=trading_pair,
                                                     mid_price=100,
@@ -350,7 +372,6 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
                                                     max_price=200,
                                                     price_step_size=1,
                                                     volume_step_size=10)
-        self.strategy._extra_spot_base_amount = Decimal("5")
         self.clock.add_iterator(self.strategy)
         self.clock.backtest_til(self.start_timestamp + 1)
         asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.01))
@@ -359,7 +380,6 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
 
     def test_arbitrage_buy_spot_sell_perp(self):
         self.strategy._position_mode_ready = True
-        self.strategy._extra_spot_base_amount = Decimal("5")
         self.clock.add_iterator(self.strategy)
         self.assertEqual(StrategyState.NotReady, self.strategy.strategy_state)
         self.turn_clock(2)
@@ -383,7 +403,7 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
 
         self.trigger_order_complete(True, self.spot_connector, open_amount, Decimal("100.5"), spot_order.order_id)
         self.trigger_order_complete(False, self.perp_connector, open_amount, Decimal("109.5"), perp_order.order_id)
-        self.spot_connector.set_balance(base_asset, Decimal("5") + open_amount)
+        self.spot_connector.set_balance(base_asset, open_amount)
         self.perp_connector._account_positions[trading_pair] = Position(
             trading_pair,
             PositionSide.SHORT,
@@ -396,8 +416,9 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         status = asyncio.get_event_loop().run_until_complete(self.strategy.format_status())
         self.assertIn("  Info:", status)
         self.assertIn("Strategy State: Ready", status)
-        self.assertIn("Ignored Spot Base Amount: 5.00 HBOT", status)
-        self.assertIn("Strategy Spot Base Balance: 0.01 HBOT", status)
+        self.assertIn("Spot Connector Base Balance: 0.01 HBOT", status)
+        self.assertIn("Extra Spot Base Amount: 0.00 HBOT", status)
+        self.assertIn("Total Spot Base Balance: 0.01 HBOT", status)
         self.assertIn("Amount: 0.01 HBOT", status)
         self.assertIn("  Positions:", status)
         self.assertIn("HBOT-USDT SHORT", status)
@@ -423,7 +444,7 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
 
         self.trigger_order_complete(False, self.spot_connector, open_amount, Decimal("99.5"), spot_order.order_id)
         self.trigger_order_complete(True, self.perp_connector, open_amount, Decimal("90.5"), perp_order.order_id)
-        self.spot_connector.set_balance(base_asset, Decimal("5"))
+        self.spot_connector.set_balance(base_asset, Decimal("0"))
         self.perp_connector._account_positions.clear()
         self.turn_clock(1)
         self.assertEqual(StrategyState.Ready, self.strategy.strategy_state)
@@ -432,7 +453,6 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
 
     def test_arbitrage_sell_spot_buy_perp_opening_is_not_supported(self):
         self.strategy._position_mode_ready = True
-        self.strategy._extra_spot_base_amount = Decimal("5")
         self.perp_connector.set_balanced_order_book(trading_pair=trading_pair,
                                                     mid_price=90,
                                                     min_price=1,

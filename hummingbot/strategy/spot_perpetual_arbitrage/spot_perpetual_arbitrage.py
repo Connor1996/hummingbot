@@ -87,7 +87,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         :param spot_market_info: The spot market info
         :param perp_market_info: The perpetual market info
         :param total_amount: The total amount of base asset to use for arbitrage
-        :param extra_spot_base_amount: The spot base inventory to ignore because it belongs outside this strategy
+        :param extra_spot_base_amount: Additional spot base inventory in external accounts to include in validation
         :param order_amount: The amount of quote asset per order
         :param perp_leverage: The leverage level to use on perpetual market
         :param min_opening_arbitrage_pct: The minimum spread to open arbitrage position (e.g. 0.0003 for 0.3%)
@@ -164,8 +164,12 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
                 s.trading_pair == self._perp_market_info.trading_pair and s.amount != s_decimal_zero]
 
     @property
-    def strategy_spot_base_balance(self) -> Decimal:
-        return max(s_decimal_zero, self._spot_market_info.base_balance - self._extra_spot_base_amount)
+    def spot_connector_base_balance(self) -> Decimal:
+        return max(s_decimal_zero, self._spot_market_info.base_balance)
+
+    @property
+    def total_spot_base_balance(self) -> Decimal:
+        return self.spot_connector_base_balance + self._extra_spot_base_amount
 
     def apply_initial_settings(self):
         self._perp_market_info.market.set_leverage(self._perp_market_info.trading_pair, self._perp_leverage)
@@ -218,7 +222,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
                 self.notify_hb_app_with_timestamp(msg)
 
     def validate_existing_position(self) -> bool:
-        spot = self.strategy_spot_base_balance
+        spot = self.total_spot_base_balance
         perp_position_amount = self.perp_positions[0].amount if len(self.perp_positions) == 1 else s_decimal_zero
         perp = abs(perp_position_amount)
         if spot == s_decimal_zero and perp == s_decimal_zero:
@@ -228,22 +232,21 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             if perp_position_amount > s_decimal_zero:
                 self.logger().warning(
                     f"There is an existing {self._perp_market_info.trading_pair} unmatched position type: "
-                    f"strategy spot balance {spot}, perpetual position amount {perp_position_amount}. "
+                    f"total spot balance {spot}, perpetual position amount {perp_position_amount}. "
                     "Please manually close out the position before starting this strategy."
                 )
                 return False
             self.logger().info(
                 f"There is an existing {self._perp_market_info.trading_pair} matched position amount {perp} "
-                f"and strategy spot balance {spot}. Ignoring configured extra spot amount "
-                f"{self._extra_spot_base_amount}."
+                f"and total spot balance {spot} including extra spot amount {self._extra_spot_base_amount}."
             )
             self._position_action = PositionAction.CLOSE
             return True
 
         self.logger().warning(
             f"There is an existing {self._perp_market_info.trading_pair} unmatched position amount {perp} "
-            f"and strategy spot balance {spot}. Ignoring configured extra spot amount "
-            f"{self._extra_spot_base_amount}. Please manually close out the position or configure "
+            f"and total spot balance {spot} including extra spot amount {self._extra_spot_base_amount}. "
+            "Please manually close out the position or configure "
             "extra_spot_base_amount before starting this strategy."
         )
         return False
@@ -340,7 +343,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
 
     @property
     def total_amount_opened(self):
-        spot = self.strategy_spot_base_balance
+        spot = self.total_spot_base_balance
         perp = abs(self.perp_positions[0].amount) if len(self.perp_positions) == 1 else s_decimal_zero
         return max(spot, perp)
 
@@ -507,15 +510,16 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         if self._position_action == PositionAction.CLOSE and not proposal_side.is_buy:
             original_order_amount = order_amount
             perp_close_amount = abs(self.perp_positions[0].amount) if len(self.perp_positions) == 1 else s_decimal_zero
-            close_amount = min(order_amount, self.strategy_spot_base_balance, perp_close_amount)
+            close_amount = min(order_amount, self.spot_connector_base_balance, perp_close_amount)
             if close_amount < order_amount:
                 proposal.order_amount = close_amount
                 order_amount = close_amount
                 self.logger().info(f"Adjusting order amount from {original_order_amount} to {close_amount}")
             if order_amount == s_decimal_zero:
                 self.logger().info(
-                    f"Cannot close arbitrage, close amount is 0 after ignoring "
-                    f"{self._extra_spot_base_amount} {self._spot_market_info.base_asset}."
+                    f"Cannot close arbitrage on {self._spot_market_info.market.display_name}, spot connector base "
+                    f"balance is 0. Extra spot amount {self._extra_spot_base_amount} "
+                    f"{self._spot_market_info.base_asset} is held outside this connector."
                 )
                 return False
         market_info = proposal_side.market_info
@@ -700,8 +704,9 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         lines.extend(["", "  Info:"])
         lines.extend(["    " + f"Strategy State: {self._strategy_state.name}"])
         lines.extend(["    " + f"Position Action: {self._position_action.name}"])
-        lines.extend(["    " + f"Ignored Spot Base Amount: {self._extra_spot_base_amount:.2f} {base}"])
-        lines.extend(["    " + f"Strategy Spot Base Balance: {self.strategy_spot_base_balance:.2f} {base}"])
+        lines.extend(["    " + f"Spot Connector Base Balance: {self.spot_connector_base_balance:.2f} {base}"])
+        lines.extend(["    " + f"Extra Spot Base Amount: {self._extra_spot_base_amount:.2f} {base}"])
+        lines.extend(["    " + f"Total Spot Base Balance: {self.total_spot_base_balance:.2f} {base}"])
         lines.extend(["    " + f"Amount: {opened:.2f} {base}({opened * price:.2f}$) / {self._total_amount} {base}({self._total_amount * price:.2f}$)"])
         lines.extend(["    " + f"Near Liquidation: {self.near_liquidation_price()}"])
         lines.extend(["    " + f"Near Liquidation Buffer: {self.near_liquidation_buffer_price()}"])

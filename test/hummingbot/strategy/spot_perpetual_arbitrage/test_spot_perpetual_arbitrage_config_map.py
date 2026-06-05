@@ -52,6 +52,6 @@ class SpotPerpetualArbitrageConfigMapTest(unittest.TestCase):
         spot_perpetual_arbitrage_config_map["spot_market"].value = "BTC-USDT"
 
         prompt = extra_spot_base_amount_prompt()
-        expected = "How much BTC on the spot connector should be ignored as non-strategy inventory? >>> "
+        expected = "How much additional BTC is held in external spot accounts for this strategy? >>> "
 
         self.assertEqual(expected, prompt)

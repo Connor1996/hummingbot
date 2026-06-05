@@ -62,7 +62,7 @@ def total_amount_prompt() -> str:
 def extra_spot_base_amount_prompt() -> str:
     trading_pair = spot_perpetual_arbitrage_config_map["spot_market"].value
     base_asset, quote_asset = trading_pair.split("-")
-    return f"How much {base_asset} on the spot connector should be ignored as non-strategy inventory? >>> "
+    return f"How much additional {base_asset} is held in external spot accounts for this strategy? >>> "
 
 
 spot_perpetual_arbitrage_config_map = {
