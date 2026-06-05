@@ -59,6 +59,12 @@ def total_amount_prompt() -> str:
     return f"What is the total amount of {base_asset}? >>> "
 
 
+def extra_spot_base_amount_prompt() -> str:
+    trading_pair = spot_perpetual_arbitrage_config_map["spot_market"].value
+    base_asset, quote_asset = trading_pair.split("-")
+    return f"How much {base_asset} on the spot connector should be ignored as non-strategy inventory? >>> "
+
+
 spot_perpetual_arbitrage_config_map = {
     "strategy": ConfigVar(
         key="strategy",
@@ -92,6 +98,13 @@ spot_perpetual_arbitrage_config_map = {
         key="total_amount",
         prompt=total_amount_prompt,
         type_str="decimal",
+        prompt_on_new=True),
+    "extra_spot_base_amount": ConfigVar(
+        key="extra_spot_base_amount",
+        prompt=extra_spot_base_amount_prompt,
+        type_str="decimal",
+        default=Decimal("0"),
+        validator=lambda v: validate_decimal(v, min_value=Decimal("0"), inclusive=True),
         prompt_on_new=True),
     "order_amount": ConfigVar(
         key="order_amount",

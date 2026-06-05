@@ -1,3 +1,4 @@
+import asyncio
 import unittest.mock
 from decimal import Decimal
 from test.hummingbot.strategy import assign_config_default
@@ -29,6 +30,7 @@ class SpotPerpetualArbitrageStartTest(unittest.TestCase):
         strategy_cmap.get("perpetual_connector").value = "kucoin"
         strategy_cmap.get("perpetual_market").value = "BTC-USDT"
 
+        strategy_cmap.get("extra_spot_base_amount").value = Decimal("4")
         strategy_cmap.get("order_amount").value = Decimal("1")
         strategy_cmap.get("perpetual_leverage").value = Decimal("2")
         strategy_cmap.get("min_opening_arbitrage_pct").value = Decimal("10")
@@ -49,8 +51,9 @@ class SpotPerpetualArbitrageStartTest(unittest.TestCase):
     def error(self, message, exc_info):
         self.log_errors.append(message)
 
-    async def test_strategy_creation(self):
-        await strategy_start.start(self)
+    def test_strategy_creation(self):
+        asyncio.get_event_loop().run_until_complete(strategy_start.start(self))
+        self.assertEqual(self.strategy._extra_spot_base_amount, Decimal("4"))
         self.assertEqual(self.strategy._order_amount, Decimal("1"))
         self.assertEqual(self.strategy._perp_leverage, Decimal("2"))
         self.assertEqual(self.strategy._min_opening_arbitrage_pct, Decimal("0.1"))

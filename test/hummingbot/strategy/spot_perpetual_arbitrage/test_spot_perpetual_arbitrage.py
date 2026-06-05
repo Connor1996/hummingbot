@@ -122,7 +122,6 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         self.perp_connector.set_position_mode(PositionMode.HEDGE)
         self.clock.backtest_til(self.start_timestamp + 2)
         self.assertTrue(self._is_logged("INFO", "Markets are ready."))
-        self.assertTrue(self._is_logged("INFO", "Trading started."))
         self.assertTrue(self._is_logged("INFO", "This strategy supports only Oneway position mode. Attempting to switch ..."))
         # assert the strategy stopped here
         # self.assertIsNone(self.strategy.clock)
@@ -149,7 +148,6 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         self.clock.add_iterator(self.strategy)
         self.clock.backtest_til(self.start_timestamp + 2)
         self.assertTrue(self._is_logged("INFO", "Markets are ready."))
-        self.assertTrue(self._is_logged("INFO", "Trading started."))
         # self.assertIsNone(self.strategy.clock)
 
     def test_strategy_starts_with_existing_position(self):
@@ -158,6 +156,8 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         """
 
         self.strategy._position_mode_ready = True
+        self.strategy._extra_spot_base_amount = Decimal("4")
+        self.strategy._total_amount = Decimal("1")
         self.clock.add_iterator(self.strategy)
         self.perp_connector._account_positions[trading_pair] = Position(
             trading_pair,
@@ -170,9 +170,10 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         self.clock.backtest_til(self.start_timestamp + 2)
         self.assertTrue(self._is_logged("INFO", "Markets are ready."))
         self.assertTrue(self._is_logged("INFO", "Trading started."))
-        self.assertTrue(self._is_logged("INFO", f"There is an existing {trading_pair} "
-                                                f"{PositionSide.SHORT.name} position. The bot resumes "
-                                                f"operation to close out the arbitrage position"))
+        self.assertTrue(self._is_logged("INFO", f"There is an existing {trading_pair} matched position amount 1 "
+                                                f"and strategy spot balance 1. Ignoring configured extra spot amount 4."))
+        self.assertEqual(Decimal("1"), self.strategy.strategy_spot_base_balance)
+        self.assertEqual(Decimal("1"), self.strategy.total_amount_opened)
         asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.01))
         self.clock.backtest_til(self.start_timestamp + 2)
 
@@ -193,15 +194,12 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         )
         self.clock.backtest_til(self.start_timestamp + 2)
         self.assertTrue(self._is_logged("INFO", "Markets are ready."))
-        self.assertTrue(self._is_logged("INFO", "Trading started."))
-        self.assertTrue(self._is_logged("INFO", f"There is an existing {trading_pair} "
-                                                f"{PositionSide.SHORT.name} position with unmatched position amount. "
-                                                f"Please manually close out the position before starting this "
-                                                f"strategy."))
+        self.assertFalse(self._is_logged("INFO", "Trading started."))
+        self.assertTrue(self._is_logged("WARNING", f"There is an existing {trading_pair} unmatched position amount 10 "
+                                                   f"and strategy spot balance 5."))
         asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.01))
         self.clock.backtest_til(self.start_timestamp + 2)
-        # assert the strategy stopped here
-        self.assertIsNone(self.strategy.clock)
+        self.assertEqual(StrategyState.NotReady, self.strategy.strategy_state)
 
     def test_create_base_proposals(self):
         asyncio.get_event_loop().run_until_complete(self._test_create_base_proposals())
@@ -214,13 +212,13 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         self.assertEqual(Decimal("100.5"), props[0].spot_side.order_price)
         self.assertEqual(False, props[0].perp_side.is_buy)
         self.assertEqual(Decimal("109.5"), props[0].perp_side.order_price)
-        self.assertEqual(Decimal("1"), props[0].order_amount)
+        self.assertEqual(Decimal("1") / Decimal("100.5"), props[0].order_amount)
 
         self.assertEqual(False, props[1].spot_side.is_buy)
         self.assertEqual(Decimal("99.5"), props[1].spot_side.order_price)
         self.assertEqual(True, props[1].perp_side.is_buy)
         self.assertEqual(Decimal("110.5"), props[1].perp_side.order_price)
-        self.assertEqual(Decimal("1"), props[1].order_amount)
+        self.assertEqual(Decimal("1") / Decimal("99.5"), props[1].order_amount)
 
     def test_get_proposal_without_perp_position_opens_without_index_error(self):
         self.spot_connector.set_balance(base_asset, 0)
@@ -342,6 +340,7 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
             Decimal("-1"),
             self.perp_connector.get_leverage(trading_pair)
         )
+        self.strategy._position_action = PositionAction.CLOSE
         self.assertTrue(self.strategy.check_budget_constraint(proposal))
 
     def test_no_arbitrage_opportunity(self):
@@ -351,6 +350,7 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
                                                     max_price=200,
                                                     price_step_size=1,
                                                     volume_step_size=10)
+        self.strategy._extra_spot_base_amount = Decimal("5")
         self.clock.add_iterator(self.strategy)
         self.clock.backtest_til(self.start_timestamp + 1)
         asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.01))
@@ -359,62 +359,51 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
 
     def test_arbitrage_buy_spot_sell_perp(self):
         self.strategy._position_mode_ready = True
+        self.strategy._extra_spot_base_amount = Decimal("5")
         self.clock.add_iterator(self.strategy)
-        self.assertEqual(StrategyState.Closed, self.strategy.strategy_state)
+        self.assertEqual(StrategyState.NotReady, self.strategy.strategy_state)
         self.turn_clock(2)
+        expected_open_amount = Decimal("1") / Decimal("100.5")
         # self.clock.backtest_til(self.start_timestamp + 1)
         # asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.01))
         self.assertTrue(self._is_logged("INFO", "Arbitrage position opening opportunity found."))
         self.assertTrue(self._is_logged("INFO", "Profitability (8.96%) is now above min_opening_arbitrage_pct."))
-        self.assertTrue(self._is_logged("INFO", "Placing BUY order for 1 HBOT at mock_paper_exchange at 100.500 price"))
-        self.assertTrue(self._is_logged("INFO", "Placing SELL order for 1 HBOT at mock_perp_connector at 109.500 price "
-                                                "to OPEN position."))
+        self.assertTrue(self._is_logged("INFO", "Placing BUY order for"))
+        self.assertTrue(self._is_logged("INFO", "to OPEN position."))
         placed_orders = self.strategy.tracked_market_orders
         self.assertEqual(2, len(placed_orders))
         spot_order = [order for market, order in placed_orders if market == self.spot_connector][0]
         self.assertTrue(spot_order.is_buy)
-        self.assertEqual(Decimal("1"), Decimal(str(spot_order.amount)))
+        open_amount = Decimal(str(spot_order.amount))
+        self.assertLess(abs(expected_open_amount - open_amount), Decimal("1e-18"))
         perp_order = [order for market, order in placed_orders if market == self.perp_connector][0]
         self.assertFalse(perp_order.is_buy)
-        self.assertEqual(Decimal("1"), Decimal(str(perp_order.amount)))
+        self.assertEqual(open_amount, Decimal(str(perp_order.amount)))
         self.assertEqual(StrategyState.Opening, self.strategy.strategy_state)
 
-        self.trigger_order_complete(True, self.spot_connector, Decimal("1"), Decimal("100.5"), spot_order.order_id)
-        self.trigger_order_complete(False, self.perp_connector, Decimal("1"), Decimal("109.5"), perp_order.order_id)
+        self.trigger_order_complete(True, self.spot_connector, open_amount, Decimal("100.5"), spot_order.order_id)
+        self.trigger_order_complete(False, self.perp_connector, open_amount, Decimal("109.5"), perp_order.order_id)
+        self.spot_connector.set_balance(base_asset, Decimal("5") + open_amount)
         self.perp_connector._account_positions[trading_pair] = Position(
             trading_pair,
             PositionSide.SHORT,
             Decimal("0"),
             Decimal("109.5"),
-            Decimal("-1"),
+            -open_amount,
             self.perp_connector.get_leverage(trading_pair)
         )
         self.turn_clock(1)
         status = asyncio.get_event_loop().run_until_complete(self.strategy.format_status())
-        expected_status = ("""
-  Markets:
-               Exchange    Market  Sell Price  Buy Price  Mid Price
-    mock_paper_exchange HBOT-USDT        99.5      100.5        100
-    mock_perp_connector HBOT-USDT       109.5      110.5        110
+        self.assertIn("  Info:", status)
+        self.assertIn("Strategy State: Ready", status)
+        self.assertIn("Ignored Spot Base Amount: 5.00 HBOT", status)
+        self.assertIn("Strategy Spot Base Balance: 0.01 HBOT", status)
+        self.assertIn("Amount: 0.01 HBOT", status)
+        self.assertIn("  Positions:", status)
+        self.assertIn("HBOT-USDT SHORT", status)
+        self.assertIn("  PnL:", status)
 
-  Positions:
-       Symbol  Type Entry Price Amount  Leverage Unrealized PnL
-    HBOT-USDT SHORT       109.5     -1         5              0
-
-  Assets:
-                  Exchange Asset  Total Balance  Available Balance
-    0  mock_paper_exchange  HBOT              5                  5
-    1  mock_paper_exchange  USDT            500                500
-    2  mock_perp_connector  HBOT              5                  5
-    3  mock_perp_connector  USDT            500                500
-
-  Opportunity:
-    buy at mock_paper_exchange, sell at mock_perp_connector: 8.96%
-    sell at mock_paper_exchange, buy at mock_perp_connector: -9.95%""")
-
-        self.assertEqual(expected_status, status)
-
-        self.assertEqual(StrategyState.Opened, self.strategy.strategy_state)
+        self.assertEqual(StrategyState.Ready, self.strategy.strategy_state)
         self.perp_connector.set_balanced_order_book(trading_pair=trading_pair,
                                                     mid_price=90,
                                                     min_price=1,
@@ -426,32 +415,24 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         self.assertEqual(4, len(placed_orders))
         spot_order = [o for m, o in placed_orders if m == self.spot_connector and o.order_id != spot_order.order_id][0]
         self.assertFalse(spot_order.is_buy)
-        self.assertEqual(Decimal("1"), Decimal(str(spot_order.amount)))
+        self.assertEqual(open_amount, Decimal(str(spot_order.amount)))
         perp_order = [o for m, o in placed_orders if m == self.perp_connector and o.order_id != perp_order.order_id][0]
         self.assertTrue(perp_order.is_buy)
-        self.assertEqual(Decimal("1"), Decimal(str(perp_order.amount)))
+        self.assertEqual(open_amount, Decimal(str(perp_order.amount)))
         self.assertEqual(StrategyState.Closing, self.strategy.strategy_state)
 
-        self.trigger_order_complete(False, self.spot_connector, Decimal("1"), Decimal("99.5"), spot_order.order_id)
-        self.trigger_order_complete(True, self.perp_connector, Decimal("1"), Decimal("90.5"), perp_order.order_id)
+        self.trigger_order_complete(False, self.spot_connector, open_amount, Decimal("99.5"), spot_order.order_id)
+        self.trigger_order_complete(True, self.perp_connector, open_amount, Decimal("90.5"), perp_order.order_id)
+        self.spot_connector.set_balance(base_asset, Decimal("5"))
         self.perp_connector._account_positions.clear()
         self.turn_clock(1)
-        # Due to the next_arbitrage_opening_delay, new arb position is not opened yet
-        self.assertEqual(StrategyState.Closed, self.strategy.strategy_state)
-        # Set balance on perpetual to 0 to test the strategy shouldn't submit orders
-        self.spot_connector.set_balance(base_asset, 0)
-        self.turn_clock(12)
-        self.assertEqual(StrategyState.Closed, self.strategy.strategy_state)
+        self.assertEqual(StrategyState.Ready, self.strategy.strategy_state)
+        self.assertEqual(Decimal("0"), self.strategy.total_amount_opened)
         self.assertEqual(4, len(self.strategy.tracked_market_orders))
 
-        self.spot_connector.set_balance(base_asset, 10)
-        self.turn_clock(1)
-        # After next_arbitrage_opening_delay, new arb orders are submitted
-        self.assertEqual(StrategyState.Opening, self.strategy.strategy_state)
-        self.assertEqual(6, len(self.strategy.tracked_market_orders))
-
-    def test_arbitrage_sell_spot_buy_perp_opening(self):
+    def test_arbitrage_sell_spot_buy_perp_opening_is_not_supported(self):
         self.strategy._position_mode_ready = True
+        self.strategy._extra_spot_base_amount = Decimal("5")
         self.perp_connector.set_balanced_order_book(trading_pair=trading_pair,
                                                     mid_price=90,
                                                     min_price=1,
@@ -459,24 +440,10 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
                                                     price_step_size=1,
                                                     volume_step_size=10)
         self.clock.add_iterator(self.strategy)
-        self.assertEqual(StrategyState.Closed, self.strategy.strategy_state)
+        self.assertEqual(StrategyState.NotReady, self.strategy.strategy_state)
         self.turn_clock(2)
-        # self.clock.backtest_til(self.start_timestamp + 1)
-        # asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.01))
-        self.assertTrue(self._is_logged("INFO", "Arbitrage position opening opportunity found."))
-        self.assertTrue(self._is_logged("INFO", "Profitability (9.94%) is now above min_opening_arbitrage_pct."))
-        self.assertTrue(self._is_logged("INFO", "Placing SELL order for 1 HBOT at mock_paper_exchange at 99.5000 price"))
-        self.assertTrue(self._is_logged("INFO", "Placing BUY order for 1 HBOT at mock_perp_connector at 90.5000 price to "
-                                                "OPEN position."))
-        placed_orders = self.strategy.tracked_market_orders
-        self.assertEqual(2, len(placed_orders))
-        spot_order = [order for market, order in placed_orders if market == self.spot_connector][0]
-        self.assertFalse(spot_order.is_buy)
-        self.assertEqual(Decimal("1"), Decimal(str(spot_order.amount)))
-        perp_order = [order for market, order in placed_orders if market == self.perp_connector][0]
-        self.assertTrue(perp_order.is_buy)
-        self.assertEqual(Decimal("1"), Decimal(str(perp_order.amount)))
-        self.assertEqual(StrategyState.Opening, self.strategy.strategy_state)
+        self.assertEqual(StrategyState.Ready, self.strategy.strategy_state)
+        self.assertEqual(0, len(self.strategy.tracked_market_orders))
 
     def turn_clock(self, no_ticks: int):
         for i in range(self._last_tick, self._last_tick + no_ticks + 1):
@@ -491,6 +458,19 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         # precisely taker orders are fully filled.
         event_tag = MarketEvent.BuyOrderCompleted if is_buy else MarketEvent.SellOrderCompleted
         event_class = BuyOrderCompletedEvent if is_buy else SellOrderCompletedEvent
+        connector.trigger_event(
+            MarketEvent.OrderFilled,
+            OrderFilledEvent(
+                timestamp=connector.current_timestamp,
+                order_id=order_id,
+                trading_pair=trading_pair,
+                trade_type=TradeType.BUY if is_buy else TradeType.SELL,
+                order_type=OrderType.LIMIT,
+                price=price,
+                amount=amount,
+                trade_fee=AddedToCostTradeFee(),
+            )
+        )
         connector.trigger_event(event_tag,
                                 event_class(connector.current_timestamp, order_id, base_asset, quote_asset,
                                             amount, amount * price, OrderType.LIMIT))

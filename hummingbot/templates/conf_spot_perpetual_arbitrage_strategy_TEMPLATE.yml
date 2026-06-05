@@ -2,7 +2,7 @@
 ###   Spot-Perpetual Arbitrage strategy config   ###
 ##########################################
 
-template_version: 3
+template_version: 4
 strategy: null
 
 # The following configurations are only required for the Spot-Perpetual Arbitrage trading strategy
@@ -14,6 +14,9 @@ perpetual_connector: null
 perpetual_market: null
 
 total_amount: null
+
+# Spot base amount to ignore as inventory outside this strategy.
+extra_spot_base_amount: null
 
 # Order amount to submit orders on both spot and perpetual markets
 order_amount: null

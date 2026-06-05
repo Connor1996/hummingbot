@@ -3,6 +3,7 @@ from copy import deepcopy
 
 from hummingbot.client.settings import AllConnectorSettings
 from hummingbot.strategy.spot_perpetual_arbitrage.spot_perpetual_arbitrage_config_map import (
+    extra_spot_base_amount_prompt,
     perpetual_market_prompt,
     spot_market_prompt,
     spot_perpetual_arbitrage_config_map,
@@ -44,5 +45,13 @@ class SpotPerpetualArbitrageConfigMapTest(unittest.TestCase):
 
         prompt = perpetual_market_prompt()
         expected = f"Enter the token trading pair you would like to trade on {self.perp_exchange} (e.g. {example}) >>> "
+
+        self.assertEqual(expected, prompt)
+
+    def test_extra_spot_base_amount_prompt(self):
+        spot_perpetual_arbitrage_config_map["spot_market"].value = "BTC-USDT"
+
+        prompt = extra_spot_base_amount_prompt()
+        expected = "How much BTC on the spot connector should be ignored as non-strategy inventory? >>> "
 
         self.assertEqual(expected, prompt)
