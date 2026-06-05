@@ -11,11 +11,15 @@ from hummingbot.connector.derivative.position import Position
 from hummingbot.connector.exchange.paper_trade.paper_trade_exchange import QuantizationParams
 from hummingbot.connector.test_support.mock_paper_exchange import MockPaperExchange
 from hummingbot.core.clock import Clock, ClockMode
-from hummingbot.core.data_type.common import OrderType, PositionMode, PositionSide
+from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, PositionSide, TradeType
+from hummingbot.core.data_type.funding_info import FundingInfo
+from hummingbot.core.data_type.trade_fee import AddedToCostTradeFee, TokenAmount
 from hummingbot.core.event.event_logger import EventLogger
 from hummingbot.core.event.events import (
     BuyOrderCompletedEvent,
+    FundingPaymentCompletedEvent,
     MarketEvent,
+    OrderFilledEvent,
     PositionModeChangeEvent,
     SellOrderCompletedEvent,
 )
@@ -217,6 +221,67 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         self.assertEqual(True, props[1].perp_side.is_buy)
         self.assertEqual(Decimal("110.5"), props[1].perp_side.order_price)
         self.assertEqual(Decimal("1"), props[1].order_amount)
+
+    def test_get_proposal_without_perp_position_opens_without_index_error(self):
+        self.spot_connector.set_balance(base_asset, 0)
+
+        proposals = asyncio.get_event_loop().run_until_complete(
+            self.strategy.get_proposal_and_update_position_action()
+        )
+
+        self.assertEqual(1, len(proposals))
+        self.assertEqual(PositionAction.OPEN, self.strategy._position_action)
+        self.assertTrue(proposals[0].spot_side.is_buy)
+        self.assertFalse(proposals[0].perp_side.is_buy)
+
+    def test_realized_pnl_stats_split_spread_funding_and_fees(self):
+        self._complete_round(
+            strategy_state=StrategyState.Opening,
+            buy_order_id="buy-open",
+            sell_order_id="sell-open",
+            buy_price=Decimal("100"),
+            sell_price=Decimal("110"),
+        )
+        self._complete_round(
+            strategy_state=StrategyState.Closing,
+            buy_order_id="buy-close",
+            sell_order_id="sell-close",
+            buy_price=Decimal("90"),
+            sell_price=Decimal("99"),
+        )
+        self.strategy.did_complete_funding_payment(
+            FundingPaymentCompletedEvent(
+                timestamp=self.start_timestamp,
+                market=self.perp_connector.name,
+                trading_pair=trading_pair,
+                amount=Decimal("1.5"),
+                funding_rate=Decimal("0.0001"),
+            )
+        )
+
+        self.assertEqual(Decimal("10"), self.strategy._stats._opening_spread_earned)
+        self.assertEqual(Decimal("9"), self.strategy._stats._closing_spread_earned)
+        self.assertEqual(Decimal("19"), self.strategy._stats._spread_earned)
+        self.assertEqual(Decimal("1.5"), self.strategy._stats._funding_earned)
+        self.assertEqual(Decimal("0.4"), self.strategy._stats._fee_paid)
+        self.assertEqual(Decimal("20.1"), self.strategy.realized_net_pnl)
+
+        self.perp_connector.initialize_funding_info(FundingInfo(
+            trading_pair=trading_pair,
+            index_price=Decimal("100"),
+            mark_price=Decimal("110"),
+            next_funding_utc_timestamp=0,
+            rate=Decimal("0.0001"),
+        ))
+        status = asyncio.get_event_loop().run_until_complete(self.strategy.format_status())
+
+        self.assertIn("  PnL:", status)
+        self.assertIn("Opening Price Spread: 10.00 USDT", status)
+        self.assertIn("Closing Price Spread: 9.00 USDT", status)
+        self.assertIn("Spread Earned: 19.00 USDT", status)
+        self.assertIn("Funding Earned: 1.50 USDT", status)
+        self.assertIn("Fee Paid: 0.40 USDT", status)
+        self.assertIn("Net Realized PnL: 20.10 USDT", status)
 
     def test_apply_slippage_buffers(self):
         proposal = ArbProposal(ArbProposalSide(self.spot_market_info, True, Decimal("100")),
@@ -429,6 +494,58 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         connector.trigger_event(event_tag,
                                 event_class(connector.current_timestamp, order_id, base_asset, quote_asset,
                                             amount, amount * price, OrderType.LIMIT))
+
+    def _complete_round(
+        self,
+        strategy_state: StrategyState,
+        buy_order_id: str,
+        sell_order_id: str,
+        buy_price: Decimal,
+        sell_price: Decimal,
+        amount: Decimal = Decimal("1"),
+        fee: Decimal = Decimal("0.1"),
+    ):
+        self.strategy._strategy_state = strategy_state
+        self.strategy._completed_buy_order_id = buy_order_id
+        self.strategy._completed_sell_order_id = sell_order_id
+        self.strategy.did_fill_order(
+            self._order_filled_event(
+                order_id=buy_order_id,
+                trade_type=TradeType.BUY,
+                price=buy_price,
+                amount=amount,
+                fee=fee,
+            )
+        )
+        self.strategy.did_fill_order(
+            self._order_filled_event(
+                order_id=sell_order_id,
+                trade_type=TradeType.SELL,
+                price=sell_price,
+                amount=amount,
+                fee=fee,
+            )
+        )
+        self.strategy.update_strategy_state()
+
+    @staticmethod
+    def _order_filled_event(
+        order_id: str,
+        trade_type: TradeType,
+        price: Decimal,
+        amount: Decimal,
+        fee: Decimal,
+    ) -> OrderFilledEvent:
+        return OrderFilledEvent(
+            timestamp=0,
+            order_id=order_id,
+            trading_pair=trading_pair,
+            trade_type=trade_type,
+            order_type=OrderType.LIMIT,
+            price=price,
+            amount=amount,
+            trade_fee=AddedToCostTradeFee(flat_fees=[TokenAmount(quote_asset, fee)]),
+        )
 
     @patch("hummingbot.connector.perpetual_trading.PerpetualTrading.set_position_mode")
     def test_position_mode_change_success(self, set_position_mode_mock):

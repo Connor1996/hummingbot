@@ -44,8 +44,14 @@ class Stats:
     def __init__(self):
         self._fee_paid = Decimal(0)
         self._overall_opening_spread_rate = Decimal(0)
+        self._opening_notional = Decimal(0)
+        self._opening_spread_earned = Decimal(0)
+        self._closing_spread_earned = Decimal(0)
         self._spread_earned = Decimal(0)
         self._funding_earned = Decimal(0)
+        self._last_opening_spread = Decimal(0)
+        self._last_closing_spread = Decimal(0)
+        self._last_round_spread = Decimal(0)
 
 
 class SpotPerpetualArbitrageStrategy(StrategyPyBase):
@@ -276,7 +282,8 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
 
     async def get_proposal_and_update_position_action(self) -> List[ArbProposal]:
         proposals = await self.create_base_proposals()
-        perp_is_buy = False if self.perp_positions[0].amount > 0 else True
+        perp_positions = self.perp_positions
+        perp_is_buy = False if len(perp_positions) > 0 and perp_positions[0].amount > 0 else True
 
         if self.near_liquidation():
             msg = f"Current price {self._perp_market_info.get_mid_price()} is near liquidation price {self.perp_positions[0].liquidation_price}, closing position."
@@ -284,7 +291,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             self.notify_hb_app_with_timestamp(msg)
             self._position_action = PositionAction.CLOSE
             return [p for p in proposals if p.perp_side.is_buy == perp_is_buy and
-                    (self.near_liquidation_emergent or p.profit_pct() >= self._min_closing_arbitrage_pct)]
+                    (self.near_liquidation_emergent() or p.profit_pct() >= self._min_closing_arbitrage_pct)]
 
         close_proposals = [p for p in proposals if p.perp_side.is_buy == perp_is_buy and
                            p.profit_pct() >= self._min_closing_arbitrage_pct]
@@ -324,39 +331,67 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
 
         buy_volume = Decimal(0)
         sell_volume = Decimal(0)
-        buy_amount = Decimal(0)
-        sell_amount = Decimal(0)
         for fill in self._completed_order_fills:
-            self._stats._fee_paid += fill.trade_fee.fee_amount_in_token(
-                trading_pair=fill.trading_pair,
-                price=fill.price,
-                order_amount=fill.amount,
-                token="USDC",
-            )
             if fill.order_id == self._completed_buy_order_id:
+                self._stats._fee_paid += self._fee_amount_in_quote(fill)
                 buy_volume += fill.amount * fill.price
             elif fill.order_id == self._completed_sell_order_id:
+                self._stats._fee_paid += self._fee_amount_in_quote(fill)
                 sell_volume += fill.amount * fill.price
             else:
                 self.logger().warning(f"Unknown order id {fill.order_id} in order fills.")
+        if buy_volume == s_decimal_zero or sell_volume == s_decimal_zero:
+            self.logger().warning(
+                f"Completed order IDs {self._completed_buy_order_id} and {self._completed_sell_order_id} "
+                f"without matching fill data. Skipping realized PnL update."
+            )
+            self._mark_round_completed()
+            return
         spread = sell_volume - buy_volume
-        price = self._spot_market_info.get_mid_price()
         self.logger().info(f"Complete one round. spread: {spread}, spread rate: {(spread/buy_volume) * Decimal(100):.2f}%. buy order id: {self._completed_buy_order_id}, sell order id: {self._completed_sell_order_id}")
         if self._strategy_state == StrategyState.Opening:
-            self._strategy_state = StrategyState.Ready
-            # buy spot and sell perp
-            opening_spread = self._stats._overall_opening_spread_rate * (self._spot_market_info.base_balance - buy_amount) * price
-            self._stats._overall_opening_spread_rate = (opening_spread + spread) / (self._spot_market_info.base_balance * price)
+            self._stats._last_opening_spread = spread
+            self._stats._opening_spread_earned += spread
+            self._stats._opening_notional += buy_volume
+            if self._stats._opening_notional != s_decimal_zero:
+                self._stats._overall_opening_spread_rate = (
+                    self._stats._opening_spread_earned / self._stats._opening_notional
+                )
         elif self._strategy_state == StrategyState.Closing:
-            self._strategy_state = StrategyState.Ready
-            # sell spot and buy perp
-            self._next_arbitrage_opening_ts = self.current_timestamp + self._next_arbitrage_opening_delay
-            opened_spread = self._stats._overall_opening_spread_rate * sell_amount * price
-            self._stats._spread_earned += opened_spread + spread
+            self._stats._last_closing_spread = spread
+            self._stats._closing_spread_earned += spread
 
+        self._stats._last_round_spread = spread
+        self._stats._spread_earned = self._stats._opening_spread_earned + self._stats._closing_spread_earned
+        self._mark_round_completed()
+
+    def _fee_amount_in_quote(self, fill: OrderFilledEvent) -> Decimal:
+        quote_asset = self._perp_market_info.quote_asset
+        try:
+            return fill.trade_fee.fee_amount_in_token(
+                trading_pair=fill.trading_pair,
+                price=fill.price,
+                order_amount=fill.amount,
+                token=quote_asset,
+            )
+        except Exception:
+            self.logger().warning(
+                f"Could not convert fee for order {fill.order_id} into {quote_asset}. "
+                "Leaving it out of realized fee stats.",
+                exc_info=True,
+            )
+            return s_decimal_zero
+
+    def _mark_round_completed(self):
+        self._strategy_state = StrategyState.Ready
+        self._next_arbitrage_opening_ts = self.current_timestamp + self._next_arbitrage_opening_delay
         self._completed_buy_order_id = 0
         self._completed_sell_order_id = 0
         self._completed_order_fills.clear()
+
+    @property
+    def realized_net_pnl(self) -> Decimal:
+        return self._stats._spread_earned + self._stats._funding_earned - self._stats._fee_paid
 
     async def create_base_proposals(self) -> List[ArbProposal]:
         """
@@ -627,13 +662,21 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         lines.extend(["    " + f"Strategy State: {self._strategy_state.name}"])
         lines.extend(["    " + f"Position Action: {self._position_action.name}"])
         lines.extend(["    " + f"Amount: {opened:.2f} {base}({opened * price:.2f}$) / {self._total_amount} {base}({self._total_amount * price:.2f}$)"])
-        lines.extend(["    " + f"Fee Paid: {self._stats._fee_paid:.2f}"])
-        lines.extend(["    " + f"Overall Opening Spread Rate: {100 * self._stats._overall_opening_spread_rate:.2f}%"])
-        lines.extend(["    " + f"Spread Earned: {self._stats._spread_earned:.2f}"])
-        lines.extend(["    " + f"Funding Earned: {self._stats._funding_earned:.2f}"])
         lines.extend(["    " + f"Near Liquidation: {self.near_liquidation_price()}"])
         lines.extend(["    " + f"Near Liquidation Buffer: {self.near_liquidation_buffer_price()}"])
         lines.extend(["    " + f"Near Liquidation Emergent: {self.near_liquidation_emergent_price()}"])
+
+        quote = self._perp_market_info.quote_asset
+        lines.extend(["", "  PnL:"])
+        lines.extend(["    " + f"Opening Price Spread: {self._stats._opening_spread_earned:.2f} {quote}"])
+        lines.extend(["    " + f"Closing Price Spread: {self._stats._closing_spread_earned:.2f} {quote}"])
+        lines.extend(["    " + f"Spread Earned: {self._stats._spread_earned:.2f} {quote}"])
+        lines.extend(["    " + f"Funding Earned: {self._stats._funding_earned:.2f} {quote}"])
+        lines.extend(["    " + f"Fee Paid: {self._stats._fee_paid:.2f} {quote}"])
+        lines.extend(["    " + f"Net Realized PnL: {self.realized_net_pnl:.2f} {quote}"])
+        lines.extend(["    " + f"Overall Opening Spread Rate: {100 * self._stats._overall_opening_spread_rate:.2f}%"])
+        lines.extend(["    " + f"Last Opening Spread: {self._stats._last_opening_spread:.2f} {quote}"])
+        lines.extend(["    " + f"Last Closing Spread: {self._stats._last_closing_spread:.2f} {quote}"])
 
         # See if there're any active positions.
         if len(self.perp_positions) > 0:
