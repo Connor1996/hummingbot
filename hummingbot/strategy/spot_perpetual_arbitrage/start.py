@@ -31,14 +31,16 @@ async def start(self):
 
     self.market_trading_pair_tuples = [spot_market_info, perpetual_market_info]
     self.strategy = SpotPerpetualArbitrageStrategy()
-    self.strategy.init_params(spot_market_info,
-                              perpetual_market_info,
-                              total_amount,
-                              order_amount,
-                              perpetual_leverage,
-                              min_opening_arbitrage_pct,
-                              min_closing_arbitrage_pct,
-                              spot_market_slippage_buffer,
-                              perpetual_market_slippage_buffer,
-                              next_arbitrage_opening_delay,
-                              near_liquidation_pct)
+    self.strategy.init_params(
+        spot_market_info=spot_market_info,
+        perp_market_info=perpetual_market_info,
+        total_amount=total_amount,
+        order_amount=order_amount,
+        perp_leverage=perpetual_leverage,
+        min_opening_arbitrage_pct=min_opening_arbitrage_pct,
+        min_closing_arbitrage_pct=min_closing_arbitrage_pct,
+        spot_market_slippage_buffer=spot_market_slippage_buffer,
+        perp_market_slippage_buffer=perpetual_market_slippage_buffer,
+        next_arbitrage_opening_delay=next_arbitrage_opening_delay,
+        near_liquidation_pct=near_liquidation_pct,
+    )

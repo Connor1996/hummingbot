@@ -98,6 +98,7 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         self.strategy.init_params(
             spot_market_info=self.spot_market_info,
             perp_market_info=self.perp_market_info,
+            total_amount=Decimal("5"),
             order_amount=Decimal("1"),
             perp_leverage=5,
             min_opening_arbitrage_pct=Decimal("0.05"),

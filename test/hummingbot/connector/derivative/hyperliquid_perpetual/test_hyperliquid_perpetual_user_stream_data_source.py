@@ -101,7 +101,7 @@ class TestHyperliquidPerpetualAPIUserStreamDataSource(IsolatedAsyncioWrapperTest
                                                                                   'cloid': '0x48424f54534548554436306163343632'},  # noqa: mock
                                                                         'status': 'canceled',
                                                                         'statusTimestamp': 1700688453173}]}
-        result_subscribe_trades = {'channel': 'user', 'data': {'fills': [
+        result_subscribe_trades = {'channel': CONSTANTS.USEREVENT_ENDPOINT_NAME, 'data': {'fills': [
             {'coin': 'ETH', 'px': '2091.3', 'sz': '0.01', 'side': 'B', 'time': 1700688460805, 'startPosition': '0.0',
              'dir': 'Open Long', 'closedPnl': '0.0',
              'hash': '0x544c46b72e0efdada8cd04080bb32b010d005a7d0554c10c4d0287e9a2c237e7', 'oid': 2260113568,  # noqa: mock
@@ -127,7 +127,7 @@ class TestHyperliquidPerpetualAPIUserStreamDataSource(IsolatedAsyncioWrapperTest
         expected_orders_subscription = {
             "method": "subscribe",
             "subscription": {
-                "type": "orderUpdates",
+                "type": CONSTANTS.USER_ORDERS_ENDPOINT_NAME,
                 "user": self.api_address,
             }
         }
@@ -135,7 +135,7 @@ class TestHyperliquidPerpetualAPIUserStreamDataSource(IsolatedAsyncioWrapperTest
         expected_trades_subscription = {
             "method": "subscribe",
             "subscription": {
-                "type": "user",
+                "type": CONSTANTS.USEREVENT_ENDPOINT_NAME,
                 "user": self.api_address,
             }
         }
