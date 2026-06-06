@@ -82,7 +82,8 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
                     next_arbitrage_opening_delay: float = 120,
                     status_report_interval: float = 10,
                     near_liquidation_pct: Decimal = Decimal("0.1"),
-                    extra_spot_base_amount: Decimal = Decimal("0")):
+                    extra_spot_base_amount: Decimal = Decimal("0"),
+                    dryrun: bool = False):
         """
         :param spot_market_info: The spot market info
         :param perp_market_info: The perpetual market info
@@ -98,6 +99,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         :param next_arbitrage_opening_delay: The number of seconds to delay before the next arb position can be opened
         :param status_report_interval: Amount of seconds to wait to refresh the status report
         :param near_liquidation_pct: The percentage of liquidation price to consider closing positions
+        :param dryrun: Whether to record decisions without submitting live orders
         """
         self._spot_market_info = spot_market_info
         self._perp_market_info = perp_market_info
@@ -105,6 +107,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         self._min_closing_arbitrage_pct = min_closing_arbitrage_pct
         self._total_amount = total_amount
         self._extra_spot_base_amount = extra_spot_base_amount or s_decimal_zero
+        self._dryrun = dryrun
         self._order_amount = order_amount
         self._perp_leverage = perp_leverage
         self._spot_market_slippage_buffer = spot_market_slippage_buffer
@@ -130,6 +133,13 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         self._position_mode_ready = False
         self._position_mode_not_ready_counter = 0
         self._trading_started = False
+        self._last_decision_action = PositionAction.NIL
+        self._last_decision_reason = "No decision yet."
+        self._last_decision_profitability = None
+        self._last_decision_order_amount = None
+        self._last_decision_spot_side = None
+        self._last_decision_perp_side = None
+        self._last_decision_budget_ok = None
 
     def all_markets_ready(self):
         return all([market.ready for market in self.active_markets])
@@ -261,8 +271,14 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             return
         proposals = await self.get_proposal_and_update_position_action()
         if len(proposals) == 0:
+            self._record_decision(self._position_action, "No profitable proposal met the current thresholds.")
             return
         if self._position_action == PositionAction.OPEN and self._next_arbitrage_opening_ts > timestamp:
+            self._record_decision(
+                self._position_action,
+                f"Waiting for next opening delay until {self._next_arbitrage_opening_ts}.",
+                proposals[0],
+            )
             return
         proposal = proposals[0]
         if self._last_arb_op_reported_ts + 60 < self.current_timestamp:
@@ -271,9 +287,41 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             self.logger().info(f"Profitability ({proposal.profit_pct():.2%}) is now above min_{pos_txt}_arbitrage_pct.")
             self._last_arb_op_reported_ts = self.current_timestamp
         self.apply_slippage_buffers(proposal)
-        if self.check_budget_constraint(proposal):
+        budget_ok = self.check_budget_constraint(proposal)
+        if budget_ok:
             self._insufficient_balance = False
+        if self._dryrun:
+            reason = "Dryrun enabled; decision recorded without order execution."
+            if not budget_ok:
+                reason = "Dryrun enabled; budget check failed and no order was executed."
+            self._record_decision(self._position_action, reason, proposal, budget_ok)
+            return
+        if budget_ok:
+            self._record_decision(self._position_action, "Executing proposal.", proposal, budget_ok)
             self.execute_arb_proposal(proposal)
+        else:
+            self._record_decision(self._position_action, "Budget check failed.", proposal, budget_ok)
+
+    def _record_decision(
+        self,
+        action: PositionAction,
+        reason: str,
+        proposal: ArbProposal = None,
+        budget_ok: bool = None,
+    ):
+        self._last_decision_action = action
+        self._last_decision_reason = reason
+        self._last_decision_budget_ok = budget_ok
+        if proposal is None:
+            self._last_decision_profitability = None
+            self._last_decision_order_amount = None
+            self._last_decision_spot_side = None
+            self._last_decision_perp_side = None
+            return
+        self._last_decision_profitability = proposal.profit_pct()
+        self._last_decision_order_amount = proposal.order_amount
+        self._last_decision_spot_side = proposal.spot_side
+        self._last_decision_perp_side = proposal.perp_side
 
     def near_liquidation_price(self):
         if len(self.perp_positions) != 0:
@@ -704,6 +752,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         lines.extend(["", "  Info:"])
         lines.extend(["    " + f"Strategy State: {self._strategy_state.name}"])
         lines.extend(["    " + f"Position Action: {self._position_action.name}"])
+        lines.extend(["    " + f"Dryrun: {self._dryrun}"])
         lines.extend(["    " + f"Spot Connector Base Balance: {self.spot_connector_base_balance:.2f} {base}"])
         lines.extend(["    " + f"Extra Spot Base Amount: {self._extra_spot_base_amount:.2f} {base}"])
         lines.extend(["    " + f"Total Spot Base Balance: {self.total_spot_base_balance:.2f} {base}"])
@@ -711,6 +760,19 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         lines.extend(["    " + f"Near Liquidation: {self.near_liquidation_price()}"])
         lines.extend(["    " + f"Near Liquidation Buffer: {self.near_liquidation_buffer_price()}"])
         lines.extend(["    " + f"Near Liquidation Emergent: {self.near_liquidation_emergent_price()}"])
+
+        lines.extend(["", "  Decision:"])
+        lines.extend(["    " + f"Action: {self._last_decision_action.name}"])
+        lines.extend(["    " + f"Reason: {self._last_decision_reason}"])
+        if self._last_decision_budget_ok is not None:
+            lines.extend(["    " + f"Budget Check: {self._last_decision_budget_ok}"])
+        if self._last_decision_profitability is not None:
+            lines.extend(["    " + f"Profitability: {self._last_decision_profitability:.2%}"])
+            lines.extend(["    " + f"Order Amount: {self._last_decision_order_amount:.8f} {base}"])
+            spot_side = "buy" if self._last_decision_spot_side.is_buy else "sell"
+            perp_side = "buy" if self._last_decision_perp_side.is_buy else "sell"
+            lines.extend(["    " + f"Spot: {spot_side} at {self._last_decision_spot_side.order_price}"])
+            lines.extend(["    " + f"Perpetual: {perp_side} at {self._last_decision_perp_side.order_price}"])
 
         quote = self._perp_market_info.quote_asset
         lines.extend(["", "  PnL:"])

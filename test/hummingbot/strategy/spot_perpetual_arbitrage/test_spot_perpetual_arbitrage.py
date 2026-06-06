@@ -203,6 +203,27 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         self.clock.backtest_til(self.start_timestamp + 2)
         self.assertEqual(StrategyState.NotReady, self.strategy.strategy_state)
 
+    def test_strategy_rejects_existing_position_with_same_direction_perp(self):
+        self.strategy._position_mode_ready = True
+        self.strategy._extra_spot_base_amount = Decimal("1")
+        self.clock.add_iterator(self.strategy)
+        self.perp_connector._account_positions[trading_pair] = Position(
+            trading_pair,
+            PositionSide.LONG,
+            Decimal("0"),
+            Decimal("95"),
+            Decimal("1"),
+            self.perp_connector.get_leverage(trading_pair)
+        )
+
+        self.clock.backtest_til(self.start_timestamp + 2)
+
+        self.assertTrue(self._is_logged("INFO", "Markets are ready."))
+        self.assertFalse(self._is_logged("INFO", "Trading started."))
+        self.assertTrue(self._is_logged("WARNING", f"There is an existing {trading_pair} unmatched position type: "
+                                                   f"total spot balance 1, perpetual position amount 1."))
+        self.assertEqual(StrategyState.NotReady, self.strategy.strategy_state)
+
     def test_create_base_proposals(self):
         asyncio.get_event_loop().run_until_complete(self._test_create_base_proposals())
 
@@ -365,6 +386,25 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         self.assertEqual(Decimal("0"), proposal.order_amount)
         self.assertTrue(self._is_logged("INFO", "Extra spot amount 1 HBOT is held outside this connector."))
 
+    def test_close_budget_caps_order_amount_to_perp_position(self):
+        proposal = ArbProposal(ArbProposalSide(self.spot_market_info, False, Decimal("100")),
+                               ArbProposalSide(self.perp_market_info, True, Decimal("100")),
+                               Decimal("1"))
+        self.spot_connector.set_balance(base_asset, 1)
+        self.perp_connector._account_positions[trading_pair] = Position(
+            trading_pair,
+            PositionSide.SHORT,
+            Decimal("0"),
+            Decimal("95"),
+            Decimal("-0.4"),
+            self.perp_connector.get_leverage(trading_pair)
+        )
+        self.strategy._position_action = PositionAction.CLOSE
+
+        self.assertTrue(self.strategy.check_budget_constraint(proposal))
+        self.assertEqual(Decimal("0.4"), proposal.order_amount)
+        self.assertTrue(self._is_logged("INFO", "Adjusting order amount from 1 to 0.4"))
+
     def test_no_arbitrage_opportunity(self):
         self.perp_connector.set_balanced_order_book(trading_pair=trading_pair,
                                                     mid_price=100,
@@ -377,6 +417,112 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.01))
         taker_orders = self.strategy.tracked_limit_orders + self.strategy.tracked_market_orders
         self.assertTrue(len(taker_orders) == 0)
+
+    def test_dryrun_records_decision_without_orders(self):
+        self.strategy._position_mode_ready = True
+        self.strategy._dryrun = True
+        self.clock.add_iterator(self.strategy)
+        self.assertEqual(StrategyState.NotReady, self.strategy.strategy_state)
+
+        self.turn_clock(2)
+
+        self.assertEqual(StrategyState.Ready, self.strategy.strategy_state)
+        self.assertEqual(0, len(self.strategy.tracked_market_orders))
+        self.assertEqual(PositionAction.OPEN, self.strategy._last_decision_action)
+        self.assertEqual(True, self.strategy._last_decision_budget_ok)
+        self.assertEqual("Dryrun enabled; decision recorded without order execution.",
+                         self.strategy._last_decision_reason)
+
+        status = asyncio.get_event_loop().run_until_complete(self.strategy.format_status())
+        self.assertIn("Dryrun: True", status)
+        self.assertIn("  Decision:", status)
+        self.assertIn("Action: OPEN", status)
+        self.assertIn("Budget Check: True", status)
+        self.assertIn("Profitability: 8.96%", status)
+        self.assertIn("Dryrun enabled; decision recorded without order execution.", status)
+        self.assertIn("Spot: buy at 100.500", status)
+        self.assertIn("Perpetual: sell at 109.500", status)
+
+    def test_dryrun_records_budget_failure_without_orders(self):
+        self.strategy._position_mode_ready = True
+        self.strategy._dryrun = True
+        self.spot_connector.set_balance(quote_asset, 0)
+        self.clock.add_iterator(self.strategy)
+
+        self.turn_clock(2)
+
+        self.assertEqual(StrategyState.Ready, self.strategy.strategy_state)
+        self.assertEqual(0, len(self.strategy.tracked_market_orders))
+        self.assertEqual(PositionAction.OPEN, self.strategy._last_decision_action)
+        self.assertEqual(False, self.strategy._last_decision_budget_ok)
+        self.assertEqual("Dryrun enabled; budget check failed and no order was executed.",
+                         self.strategy._last_decision_reason)
+
+        status = asyncio.get_event_loop().run_until_complete(self.strategy.format_status())
+        self.assertIn("Dryrun: True", status)
+        self.assertIn("Budget Check: False", status)
+        self.assertIn("Dryrun enabled; budget check failed and no order was executed.", status)
+
+    def test_closing_decision_is_not_blocked_by_next_opening_delay(self):
+        amount = Decimal("0.01")
+        self.strategy._position_mode_ready = True
+        self.strategy._next_arbitrage_opening_ts = self.start_timestamp + 1000
+        self.spot_connector.set_balance(base_asset, amount)
+        self.perp_connector._account_positions[trading_pair] = Position(
+            trading_pair,
+            PositionSide.SHORT,
+            Decimal("0"),
+            Decimal("109.5"),
+            -amount,
+            self.perp_connector.get_leverage(trading_pair)
+        )
+        self.perp_connector.set_balanced_order_book(trading_pair=trading_pair,
+                                                    mid_price=90,
+                                                    min_price=1,
+                                                    max_price=200,
+                                                    price_step_size=1,
+                                                    volume_step_size=10)
+        self.clock.add_iterator(self.strategy)
+
+        self.turn_clock(2)
+
+        placed_orders = self.strategy.tracked_market_orders
+        self.assertEqual(2, len(placed_orders))
+        self.assertEqual(PositionAction.CLOSE, self.strategy._position_action)
+        self.assertEqual(PositionAction.CLOSE, self.strategy._last_decision_action)
+        self.assertEqual("Executing proposal.", self.strategy._last_decision_reason)
+        self.assertEqual(StrategyState.Closing, self.strategy.strategy_state)
+
+    def test_near_liquidation_emergent_closes_even_without_min_closing_profit(self):
+        self.strategy._set_current_timestamp(self.start_timestamp)
+        self.strategy._min_closing_arbitrage_pct = Decimal("0.5")
+        self.perp_connector.set_balanced_order_book(trading_pair=trading_pair,
+                                                    mid_price=105,
+                                                    min_price=1,
+                                                    max_price=200,
+                                                    price_step_size=1,
+                                                    volume_step_size=10)
+        self.perp_connector._account_positions[trading_pair] = Position(
+            trading_pair,
+            PositionSide.SHORT,
+            Decimal("0"),
+            Decimal("95"),
+            Decimal("-1"),
+            self.perp_connector.get_leverage(trading_pair),
+            Decimal("100"),
+        )
+
+        with patch.object(self.strategy, "notify_hb_app_with_timestamp") as notify_mock:
+            proposals = asyncio.get_event_loop().run_until_complete(
+                self.strategy.get_proposal_and_update_position_action()
+            )
+
+        self.assertTrue(self.strategy.near_liquidation_emergent())
+        notify_mock.assert_called_once()
+        self.assertEqual(PositionAction.CLOSE, self.strategy._position_action)
+        self.assertEqual(1, len(proposals))
+        self.assertTrue(proposals[0].perp_side.is_buy)
+        self.assertLess(proposals[0].profit_pct(), self.strategy._min_closing_arbitrage_pct)
 
     def test_arbitrage_buy_spot_sell_perp(self):
         self.strategy._position_mode_ready = True
@@ -416,6 +562,7 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         status = asyncio.get_event_loop().run_until_complete(self.strategy.format_status())
         self.assertIn("  Info:", status)
         self.assertIn("Strategy State: Ready", status)
+        self.assertIn("Dryrun: False", status)
         self.assertIn("Spot Connector Base Balance: 0.01 HBOT", status)
         self.assertIn("Extra Spot Base Amount: 0.00 HBOT", status)
         self.assertIn("Total Spot Base Balance: 0.01 HBOT", status)
@@ -423,6 +570,9 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         self.assertIn("  Positions:", status)
         self.assertIn("HBOT-USDT SHORT", status)
         self.assertIn("  PnL:", status)
+        self.assertIn("  Decision:", status)
+        self.assertIn("Action: OPEN", status)
+        self.assertIn("Reason: Waiting for next opening delay", status)
 
         self.assertEqual(StrategyState.Ready, self.strategy.strategy_state)
         self.perp_connector.set_balanced_order_book(trading_pair=trading_pair,

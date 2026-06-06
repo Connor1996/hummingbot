@@ -2,7 +2,7 @@
 ###   Spot-Perpetual Arbitrage strategy config   ###
 ##########################################
 
-template_version: 5
+template_version: 7
 strategy: null
 
 # The following configurations are only required for the Spot-Perpetual Arbitrage trading strategy
@@ -17,6 +17,9 @@ total_amount: null
 
 # Additional spot base amount held in external accounts and included in position validation.
 extra_spot_base_amount: null
+
+# Whether to run without submitting live orders while still showing decisions.
+dryrun: null
 
 # Order amount to submit orders on both spot and perpetual markets
 order_amount: null

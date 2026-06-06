@@ -14,6 +14,7 @@ async def start(self):
     perpetual_market = spot_perpetual_arbitrage_config_map.get("perpetual_market").value
     total_amount = spot_perpetual_arbitrage_config_map.get("total_amount").value
     extra_spot_base_amount = spot_perpetual_arbitrage_config_map.get("extra_spot_base_amount").value or Decimal("0")
+    dryrun = spot_perpetual_arbitrage_config_map.get("dryrun").value or False
     order_amount = spot_perpetual_arbitrage_config_map.get("order_amount").value
     perpetual_leverage = spot_perpetual_arbitrage_config_map.get("perpetual_leverage").value
     min_opening_arbitrage_pct = spot_perpetual_arbitrage_config_map.get("min_opening_arbitrage_pct").value / Decimal("100")
@@ -37,6 +38,7 @@ async def start(self):
         perp_market_info=perpetual_market_info,
         total_amount=total_amount,
         extra_spot_base_amount=extra_spot_base_amount,
+        dryrun=dryrun,
         order_amount=order_amount,
         perp_leverage=perpetual_leverage,
         min_opening_arbitrage_pct=min_opening_arbitrage_pct,

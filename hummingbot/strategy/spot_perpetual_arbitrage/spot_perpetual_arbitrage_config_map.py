@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from hummingbot.client.config.config_validators import (
+    validate_bool,
     validate_connector,
     validate_decimal,
     validate_derivative,
@@ -105,6 +106,13 @@ spot_perpetual_arbitrage_config_map = {
         type_str="decimal",
         default=Decimal("0"),
         validator=lambda v: validate_decimal(v, min_value=Decimal("0"), inclusive=True),
+        prompt_on_new=True),
+    "dryrun": ConfigVar(
+        key="dryrun",
+        prompt="Do you want to enable dryrun mode and skip live order execution? (Yes/No) >>> ",
+        type_str="bool",
+        default=False,
+        validator=validate_bool,
         prompt_on_new=True),
     "order_amount": ConfigVar(
         key="order_amount",
