@@ -224,10 +224,6 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         return self.spot_connector_base_balance + self._extra_spot_base_amount
 
     def apply_initial_settings(self):
-        if self._dryrun:
-            self.logger().info("Dryrun enabled; skipping leverage and position mode updates.")
-            self._position_mode_ready = True
-            return
         self._perp_market_info.market.set_leverage(self._perp_market_info.trading_pair, self._perp_leverage)
         self._perp_market_info.market.set_position_mode(PositionMode.ONEWAY)
 
@@ -244,16 +240,12 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
                 self.logger().info("Markets are ready.")
 
             if not self._position_mode_ready:
-                if self._dryrun:
-                    self.logger().info("Dryrun enabled; skipping position mode readiness wait.")
-                    self._position_mode_ready = True
-                else:
-                    self._position_mode_not_ready_counter += 1
-                    # Attempt to switch position mode every 10 ticks only to not to spam and DDOS
-                    if self._position_mode_not_ready_counter == 10:
-                        self._perp_market_info.market.set_position_mode(PositionMode.ONEWAY)
-                        self._position_mode_not_ready_counter = 0
-                    return
+                self._position_mode_not_ready_counter += 1
+                # Attempt to switch position mode every 10 ticks only to not to spam and DDOS
+                if self._position_mode_not_ready_counter == 10:
+                    self._perp_market_info.market.set_position_mode(PositionMode.ONEWAY)
+                    self._position_mode_not_ready_counter = 0
+                return
             self._position_mode_not_ready_counter = 0
 
             # if not self.check_budget_available():
@@ -262,12 +254,9 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
 
             if self._perp_market_info.market.position_mode != PositionMode.ONEWAY or \
                     len(self.perp_positions) > 1:
-                if self._dryrun:
-                    self.logger().info("Dryrun enabled; skipping position mode enforcement.")
-                else:
-                    self.logger().info("This strategy supports only Oneway position mode. Attempting to switch ...")
-                    self._perp_market_info.market.set_position_mode(PositionMode.ONEWAY)
-                    return
+                self.logger().info("This strategy supports only Oneway position mode. Attempting to switch ...")
+                self._perp_market_info.market.set_position_mode(PositionMode.ONEWAY)
+                return
 
             if not self.validate_existing_position():
                 return
@@ -687,6 +676,17 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
 
         return True
 
+    def status_balance_warnings(self) -> List[str]:
+        warning_lines = self.balance_warning([self._spot_market_info])
+        perp_quote = self._perp_market_info.quote_asset
+        perp_quote_balance = self._perp_market_info.market.get_available_balance(perp_quote)
+        if perp_quote_balance <= Decimal("0.0001"):
+            warning_lines.append(
+                f"  {self._perp_market_info.market.name} market {perp_quote} available balance is too low. "
+                "Cannot place order."
+            )
+        return warning_lines
+
     def check_budget_constraint(self, proposal: ArbProposal) -> bool:
         """
         Check balances on both exchanges if there is enough to submit both orders in a proposal.
@@ -952,8 +952,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
 
         warning_lines = self.network_warning([self._spot_market_info])
         warning_lines.extend(self.network_warning([self._perp_market_info]))
-        warning_lines.extend(self.balance_warning([self._spot_market_info]))
-        warning_lines.extend(self.balance_warning([self._perp_market_info]))
+        warning_lines.extend(self.status_balance_warnings())
         if len(warning_lines) > 0:
             lines.extend(["", "*** WARNINGS ***"] + warning_lines)
 

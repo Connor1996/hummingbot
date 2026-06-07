@@ -523,38 +523,42 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         self.assertIn("Budget Check: False", status)
         self.assertIn("Dryrun enabled; budget check failed and no order was executed.", status)
 
-    def test_dryrun_skips_account_setting_updates_on_start(self):
+    def test_dryrun_applies_account_setting_updates_on_start(self):
         self.strategy._dryrun = True
 
         with patch.object(self.perp_connector, "set_leverage") as set_leverage_mock, \
                 patch.object(self.perp_connector, "set_position_mode") as set_position_mode_mock:
             self.strategy.start(self.clock, self.start_timestamp)
 
-        set_leverage_mock.assert_not_called()
-        set_position_mode_mock.assert_not_called()
-        self.assertTrue(self.strategy._position_mode_ready)
+        set_leverage_mock.assert_called_once_with(trading_pair, 5)
+        set_position_mode_mock.assert_called_once_with(PositionMode.ONEWAY)
+        self.assertFalse(self.strategy._position_mode_ready)
 
-    def test_dryrun_does_not_enforce_position_mode(self):
-        self.strategy._dryrun = True
+    def test_status_does_not_warn_on_perp_base_balance(self):
         self.strategy._position_mode_ready = True
-        self.perp_connector.set_position_mode(PositionMode.HEDGE)
-
-        with patch.object(self.perp_connector, "set_position_mode") as set_position_mode_mock:
-            self.strategy.tick(self.start_timestamp + 1)
-
-        set_position_mode_mock.assert_not_called()
-        self.assertTrue(self._is_logged("INFO", "Dryrun enabled; skipping position mode enforcement."))
-
-    def test_dryrun_does_not_wait_for_position_mode_event(self):
         self.strategy._dryrun = True
-        self.strategy._position_mode_ready = False
+        self.perp_connector.set_balance(base_asset, 0)
+        self.perp_connector.set_balance(quote_asset, 500)
 
-        with patch.object(self.perp_connector, "set_position_mode") as set_position_mode_mock:
-            self.strategy.tick(self.start_timestamp + 1)
+        status = asyncio.get_event_loop().run_until_complete(self.strategy.format_status())
 
-        set_position_mode_mock.assert_not_called()
-        self.assertTrue(self.strategy._position_mode_ready)
-        self.assertTrue(self._is_logged("INFO", "Dryrun enabled; skipping position mode readiness wait."))
+        self.assertNotIn(
+            f"{self.perp_connector.name} market {base_asset} balance is too low. Cannot place order.",
+            status,
+        )
+
+    def test_status_warns_on_perp_quote_available_balance(self):
+        self.strategy._position_mode_ready = True
+        self.strategy._dryrun = True
+        self.perp_connector.set_balance(base_asset, 0)
+        self.perp_connector.set_balance(quote_asset, 0)
+
+        status = asyncio.get_event_loop().run_until_complete(self.strategy.format_status())
+
+        self.assertIn(
+            f"{self.perp_connector.name} market {quote_asset} available balance is too low. Cannot place order.",
+            status,
+        )
 
     def test_closing_decision_is_not_blocked_by_next_opening_delay(self):
         amount = Decimal("0.01")
