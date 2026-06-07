@@ -523,6 +523,39 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         self.assertIn("Budget Check: False", status)
         self.assertIn("Dryrun enabled; budget check failed and no order was executed.", status)
 
+    def test_dryrun_skips_account_setting_updates_on_start(self):
+        self.strategy._dryrun = True
+
+        with patch.object(self.perp_connector, "set_leverage") as set_leverage_mock, \
+                patch.object(self.perp_connector, "set_position_mode") as set_position_mode_mock:
+            self.strategy.start(self.clock, self.start_timestamp)
+
+        set_leverage_mock.assert_not_called()
+        set_position_mode_mock.assert_not_called()
+        self.assertTrue(self.strategy._position_mode_ready)
+
+    def test_dryrun_does_not_enforce_position_mode(self):
+        self.strategy._dryrun = True
+        self.strategy._position_mode_ready = True
+        self.perp_connector.set_position_mode(PositionMode.HEDGE)
+
+        with patch.object(self.perp_connector, "set_position_mode") as set_position_mode_mock:
+            self.strategy.tick(self.start_timestamp + 1)
+
+        set_position_mode_mock.assert_not_called()
+        self.assertTrue(self._is_logged("INFO", "Dryrun enabled; skipping position mode enforcement."))
+
+    def test_dryrun_does_not_wait_for_position_mode_event(self):
+        self.strategy._dryrun = True
+        self.strategy._position_mode_ready = False
+
+        with patch.object(self.perp_connector, "set_position_mode") as set_position_mode_mock:
+            self.strategy.tick(self.start_timestamp + 1)
+
+        set_position_mode_mock.assert_not_called()
+        self.assertTrue(self.strategy._position_mode_ready)
+        self.assertTrue(self._is_logged("INFO", "Dryrun enabled; skipping position mode readiness wait."))
+
     def test_closing_decision_is_not_blocked_by_next_opening_delay(self):
         amount = Decimal("0.01")
         self.strategy._position_mode_ready = True

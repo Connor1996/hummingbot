@@ -100,6 +100,15 @@ class HyperliquidPerpetualConfigMap(BaseConnectorConfigMap):
             "prompt_on_new": True,
         }
     )
+    enable_hip3_markets: bool = Field(
+        default=False,
+        json_schema_extra={
+            "prompt": "Do you want to enable HIP-3 DEX markets? (Yes/No)",
+            "is_secure": False,
+            "is_connect_key": True,
+            "prompt_on_new": False,
+        }
+    )
     model_config = ConfigDict(title="hyperliquid_perpetual")
 
     @field_validator("hyperliquid_perpetual_mode", mode="before")
@@ -123,6 +132,12 @@ class HyperliquidPerpetualConfigMap(BaseConnectorConfigMap):
                 # Strip out the "HL:" that the HyperLiquid Vault page adds to vault addresses
                 return value[3:]
         return value
+
+    @field_validator("enable_hip3_markets", mode="before")
+    @classmethod
+    def validate_enable_hip3_markets(cls, value: str):
+        """Used for client-friendly error output."""
+        return validate_bool(value)
 
 
 KEYS = HyperliquidPerpetualConfigMap.model_construct()
@@ -178,6 +193,15 @@ class HyperliquidPerpetualTestnetConfigMap(BaseConnectorConfigMap):
             "prompt_on_new": True,
         }
     )
+    enable_hip3_markets: bool = Field(
+        default=False,
+        json_schema_extra={
+            "prompt": "Do you want to enable HIP-3 DEX markets? (Yes/No)",
+            "is_secure": False,
+            "is_connect_key": True,
+            "prompt_on_new": False,
+        }
+    )
     model_config = ConfigDict(title="hyperliquid_perpetual")
 
     @field_validator("hyperliquid_perpetual_testnet_mode", mode="before")
@@ -201,6 +225,12 @@ class HyperliquidPerpetualTestnetConfigMap(BaseConnectorConfigMap):
                 # Strip out the "HL:" that the HyperLiquid Vault page adds to vault addresses
                 return value[3:]
         return value
+
+    @field_validator("enable_hip3_markets", mode="before")
+    @classmethod
+    def validate_enable_hip3_markets(cls, value: str):
+        """Used for client-friendly error output."""
+        return validate_bool(value)
 
 
 OTHER_DOMAINS_KEYS = {

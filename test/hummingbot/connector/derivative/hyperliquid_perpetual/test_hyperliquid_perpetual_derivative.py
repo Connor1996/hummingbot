@@ -2347,6 +2347,9 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
         self.assertIn("xyz:VALID", self.exchange.coin_to_asset)
         self.assertNotIn("INVALID_NO_COLON", self.exchange.coin_to_asset)
 
+    def test_hip3_markets_are_disabled_by_default(self):
+        self.assertFalse(self.exchange._enable_hip3_markets)
+
     @aioresponses()
     def test_update_trading_fees_is_noop(self, mock_api):
         """Test that _update_trading_fees does nothing (pass implementation)."""
@@ -2556,6 +2559,7 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
     @aioresponses()
     def test_get_all_pairs_prices(self, mock_api):
         """Test get_all_pairs_prices returns prices for both perp and HIP-3 markets."""
+        self.exchange._enable_hip3_markets = True
         url = web_utils.public_rest_url(CONSTANTS.TICKER_PRICE_CHANGE_URL)
 
         # Mock base perp response
@@ -2584,6 +2588,7 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
 
         self.assertIsInstance(result, list)
         self.assertTrue(len(result) > 0)
+        self.assertIn({"symbol": "xyz:XYZ100", "price": "25349.0"}, result)
 
     @aioresponses()
     def test_get_all_pairs_prices_with_empty_dex(self, mock_api):
@@ -3619,6 +3624,27 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
 
         # Should still have symbol map
         self.assertTrue(self.exchange.trading_pair_symbol_map_ready())
+
+    def test_initialize_trading_pair_symbols_handles_hip3_symbol_with_multiple_colons(self):
+        self.exchange._dex_markets = [
+            {
+                "name": "xyz",
+                "perpMeta": [
+                    {"name": "xyz:ABC:DEF"},
+                ],
+            }
+        ]
+
+        mock_response = [
+            {"universe": [{"name": "BTC", "szDecimals": 5}]},
+            [{"markPx": "36733.0"}],
+        ]
+
+        self.exchange._initialize_trading_pair_symbols_from_exchange_info(mock_response)
+
+        self.assertTrue(self.exchange.trading_pair_symbol_map_ready())
+        symbol_map = self.async_run_with_timeout(self.exchange.trading_pair_symbol_map())
+        self.assertEqual("XYZ:ABC:DEF-USD", symbol_map["xyz:ABC:DEF"])
 
     def test_format_trading_rules_dex_info_none_in_list(self):
         """Test _format_trading_rules when dex_info is None in _dex_markets list (line 788)."""

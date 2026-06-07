@@ -62,5 +62,5 @@ class HyperliquidPerpetualRateSource(RateSourceBase):
             hyperliquid_perpetual_mode = "arb_wallet",
             hyperliquid_perpetual_address="",
             trading_required=False,
-            enable_hip3_markets=True,
+            enable_hip3_markets=False,
         )

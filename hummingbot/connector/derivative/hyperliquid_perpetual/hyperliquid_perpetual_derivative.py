@@ -52,7 +52,7 @@ class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
             trading_pairs: Optional[List[str]] = None,
             trading_required: bool = True,
             domain: str = CONSTANTS.DOMAIN,
-            enable_hip3_markets: bool = True,
+            enable_hip3_markets: bool = False,
     ):
         self.hyperliquid_perpetual_address = hyperliquid_perpetual_address
         self.hyperliquid_perpetual_secret_key = hyperliquid_perpetual_secret_key
@@ -982,7 +982,7 @@ class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
                     full_symbol = perp_meta.get("name", "")  # e.g., 'xyz:AAPL'
                     if ':' in full_symbol:
                         self._is_hip3_market[full_symbol] = True
-                        deployer, base = full_symbol.split(':')
+                        deployer, base = full_symbol.split(":", 1)
                         quote = CONSTANTS.CURRENCY
                         symbol = f'{deployer.upper()}_{base}'
                         # quote = "USD" if deployer == "xyz" else 'USDH'
@@ -1001,7 +1001,7 @@ class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
             if len(parts) >= 2:
                 exchange_symbol = trading_pair.rsplit("-", 1)[0]
                 # Convert to lowercase for the dex name part
-                dex_name, coin = exchange_symbol.split(":")
+                dex_name, coin = exchange_symbol.split(":", 1)
                 exchange_symbol = f"{dex_name.lower()}:{coin}"
         else:
             try:

@@ -178,6 +178,7 @@ class HyperliquidPerpetualRateSourceTest(IsolatedAsyncioWrapperTestCase):
 
         # Now exchange should be created
         self.assertIsNotNone(rate_source._exchange)
+        self.assertFalse(rate_source._exchange._enable_hip3_markets)
 
     def test_name_property(self):
         """Test name property returns correct value."""

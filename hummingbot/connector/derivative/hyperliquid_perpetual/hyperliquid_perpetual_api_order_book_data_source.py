@@ -57,7 +57,7 @@ class HyperliquidPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource
         # Check if this is a HIP-3 market (contains ":")
         if ":" in ex_trading_pair:
             # HIP-3 markets: Use REST API with dex parameter
-            dex_name = ex_trading_pair.split(':')[0]
+            dex_name = ex_trading_pair.split(":", 1)[0]
             try:
                 response = await self._connector._api_post(
                     path_url=CONSTANTS.EXCHANGE_INFO_URL,
