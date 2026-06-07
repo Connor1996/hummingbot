@@ -1,8 +1,10 @@
 import asyncio
+import csv
 import logging
 from decimal import Decimal
 from enum import Enum
-from typing import Dict, List, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -31,6 +33,20 @@ from hummingbot.strategy.strategy_py_base import StrategyPyBase
 NaN = float("nan")
 s_decimal_zero = Decimal(0)
 spa_logger = None
+ARBITRAGE_HISTORY_COLUMNS = [
+    "timestamp",
+    "event_type",
+    "action",
+    "trading_pair",
+    "buy_order_id",
+    "sell_order_id",
+    "buy_volume",
+    "sell_volume",
+    "spread",
+    "fee_paid",
+    "funding_amount",
+    "net_pnl_delta",
+]
 
 
 class StrategyState(Enum):
@@ -52,6 +68,28 @@ class Stats:
         self._last_opening_spread = Decimal(0)
         self._last_closing_spread = Decimal(0)
         self._last_round_spread = Decimal(0)
+        self._history_records = 0
+
+    def add_round(self, action: StrategyState, buy_volume: Decimal, sell_volume: Decimal, fee_paid: Decimal) -> Decimal:
+        spread = sell_volume - buy_volume
+        self._fee_paid += fee_paid
+        if action == StrategyState.Opening:
+            self._last_opening_spread = spread
+            self._opening_spread_earned += spread
+            self._opening_notional += buy_volume
+            if self._opening_notional != s_decimal_zero:
+                self._overall_opening_spread_rate = self._opening_spread_earned / self._opening_notional
+        elif action == StrategyState.Closing:
+            self._last_closing_spread = spread
+            self._closing_spread_earned += spread
+        self._last_round_spread = spread
+        self._spread_earned = self._opening_spread_earned + self._closing_spread_earned
+        self._history_records += 1
+        return spread
+
+    def add_funding(self, amount: Decimal):
+        self._funding_earned += amount
+        self._history_records += 1
 
 
 class SpotPerpetualArbitrageStrategy(StrategyPyBase):
@@ -83,7 +121,8 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
                     status_report_interval: float = 10,
                     near_liquidation_pct: Decimal = Decimal("0.1"),
                     extra_spot_base_amount: Decimal = Decimal("0"),
-                    dryrun: bool = False):
+                    dryrun: bool = False,
+                    history_file_path: Optional[str] = None):
         """
         :param spot_market_info: The spot market info
         :param perp_market_info: The perpetual market info
@@ -100,6 +139,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         :param status_report_interval: Amount of seconds to wait to refresh the status report
         :param near_liquidation_pct: The percentage of liquidation price to consider closing positions
         :param dryrun: Whether to record decisions without submitting live orders
+        :param history_file_path: CSV file used to persist realized arbitrage PnL and funding history
         """
         self._spot_market_info = spot_market_info
         self._perp_market_info = perp_market_info
@@ -120,6 +160,8 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         self._status_report_interval = status_report_interval
         self._near_liquidation_pct = near_liquidation_pct
         self._stats = Stats()
+        self._history_file_path = Path(history_file_path) if history_file_path is not None else None
+        self._load_history()
         self.add_markets([spot_market_info.market, perp_market_info.market])
 
         self._main_task = None
@@ -323,6 +365,101 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         self._last_decision_spot_side = proposal.spot_side
         self._last_decision_perp_side = proposal.perp_side
 
+    @staticmethod
+    def _decimal_from_history(value: str) -> Decimal:
+        return Decimal(value) if value not in (None, "") else s_decimal_zero
+
+    def _load_history(self):
+        if self._history_file_path is None or not self._history_file_path.exists():
+            return
+        try:
+            with self._history_file_path.open("r", newline="") as history_file:
+                reader = csv.DictReader(history_file)
+                for row in reader:
+                    event_type = row.get("event_type")
+                    if event_type == "round":
+                        action = StrategyState[row["action"]]
+                        self._stats.add_round(
+                            action=action,
+                            buy_volume=self._decimal_from_history(row.get("buy_volume")),
+                            sell_volume=self._decimal_from_history(row.get("sell_volume")),
+                            fee_paid=self._decimal_from_history(row.get("fee_paid")),
+                        )
+                    elif event_type == "funding":
+                        self._stats.add_funding(self._decimal_from_history(row.get("funding_amount")))
+        except Exception:
+            self.logger().warning(
+                f"Could not load arbitrage history from {self._history_file_path}. Starting with empty history.",
+                exc_info=True,
+            )
+            self._stats = Stats()
+
+    def _history_timestamp(self, fallback_timestamp: float = 0) -> str:
+        timestamp = self.current_timestamp
+        if timestamp != timestamp:
+            timestamp = fallback_timestamp
+        return str(timestamp)
+
+    def _append_history_row(self, row: Dict[str, str]):
+        if self._history_file_path is None:
+            return
+        try:
+            self._history_file_path.parent.mkdir(parents=True, exist_ok=True)
+            should_write_header = not self._history_file_path.exists() or self._history_file_path.stat().st_size == 0
+            with self._history_file_path.open("a", newline="") as history_file:
+                writer = csv.DictWriter(history_file, fieldnames=ARBITRAGE_HISTORY_COLUMNS)
+                if should_write_header:
+                    writer.writeheader()
+                writer.writerow(row)
+        except Exception:
+            self.logger().warning(
+                f"Could not write arbitrage history to {self._history_file_path}.",
+                exc_info=True,
+            )
+
+    def _record_round_history(
+        self,
+        action: StrategyState,
+        buy_volume: Decimal,
+        sell_volume: Decimal,
+        fee_paid: Decimal,
+        fallback_timestamp: float,
+    ) -> Decimal:
+        spread = self._stats.add_round(action, buy_volume, sell_volume, fee_paid)
+        self._append_history_row({
+            "timestamp": self._history_timestamp(fallback_timestamp),
+            "event_type": "round",
+            "action": action.name,
+            "trading_pair": self._perp_market_info.trading_pair,
+            "buy_order_id": str(self._completed_buy_order_id),
+            "sell_order_id": str(self._completed_sell_order_id),
+            "buy_volume": str(buy_volume),
+            "sell_volume": str(sell_volume),
+            "spread": str(spread),
+            "fee_paid": str(fee_paid),
+            "funding_amount": "0",
+            "net_pnl_delta": str(spread - fee_paid),
+        })
+        return spread
+
+    def _record_funding_history(self, funding_payment_completed_event: FundingPaymentCompletedEvent):
+        amount = funding_payment_completed_event.amount
+        self._stats.add_funding(amount)
+        self._append_history_row({
+            "timestamp": self._history_timestamp(funding_payment_completed_event.timestamp),
+            "event_type": "funding",
+            "action": "Funding",
+            "trading_pair": funding_payment_completed_event.trading_pair,
+            "buy_order_id": "",
+            "sell_order_id": "",
+            "buy_volume": "0",
+            "sell_volume": "0",
+            "spread": "0",
+            "fee_paid": "0",
+            "funding_amount": str(amount),
+            "net_pnl_delta": str(amount),
+        })
+
     def near_liquidation_price(self):
         if len(self.perp_positions) != 0:
             if self.perp_positions[0].liquidation_price is None:
@@ -407,13 +544,17 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
 
         buy_volume = Decimal(0)
         sell_volume = Decimal(0)
+        fee_paid = Decimal(0)
+        fallback_timestamp = 0
         for fill in self._completed_order_fills:
             if fill.order_id == self._completed_buy_order_id:
-                self._stats._fee_paid += self._fee_amount_in_quote(fill)
+                fee_paid += self._fee_amount_in_quote(fill)
                 buy_volume += fill.amount * fill.price
+                fallback_timestamp = max(fallback_timestamp, fill.timestamp)
             elif fill.order_id == self._completed_sell_order_id:
-                self._stats._fee_paid += self._fee_amount_in_quote(fill)
+                fee_paid += self._fee_amount_in_quote(fill)
                 sell_volume += fill.amount * fill.price
+                fallback_timestamp = max(fallback_timestamp, fill.timestamp)
             else:
                 self.logger().warning(f"Unknown order id {fill.order_id} in order fills.")
         if buy_volume == s_decimal_zero or sell_volume == s_decimal_zero:
@@ -423,22 +564,14 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             )
             self._mark_round_completed()
             return
-        spread = sell_volume - buy_volume
+        spread = self._record_round_history(
+            action=self._strategy_state,
+            buy_volume=buy_volume,
+            sell_volume=sell_volume,
+            fee_paid=fee_paid,
+            fallback_timestamp=fallback_timestamp,
+        )
         self.logger().info(f"Complete one round. spread: {spread}, spread rate: {(spread/buy_volume) * Decimal(100):.2f}%. buy order id: {self._completed_buy_order_id}, sell order id: {self._completed_sell_order_id}")
-        if self._strategy_state == StrategyState.Opening:
-            self._stats._last_opening_spread = spread
-            self._stats._opening_spread_earned += spread
-            self._stats._opening_notional += buy_volume
-            if self._stats._opening_notional != s_decimal_zero:
-                self._stats._overall_opening_spread_rate = (
-                    self._stats._opening_spread_earned / self._stats._opening_notional
-                )
-        elif self._strategy_state == StrategyState.Closing:
-            self._stats._last_closing_spread = spread
-            self._stats._closing_spread_earned += spread
-
-        self._stats._last_round_spread = spread
-        self._stats._spread_earned = self._stats._opening_spread_earned + self._stats._closing_spread_earned
         self._mark_round_completed()
 
     def _fee_amount_in_quote(self, fill: OrderFilledEvent) -> Decimal:
@@ -468,6 +601,10 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
     @property
     def realized_net_pnl(self) -> Decimal:
         return self._stats._spread_earned + self._stats._funding_earned - self._stats._fee_paid
+
+    @property
+    def history_file_path(self) -> Optional[str]:
+        return str(self._history_file_path) if self._history_file_path is not None else None
 
     async def create_base_proposals(self) -> List[ArbProposal]:
         """
@@ -785,6 +922,8 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         lines.extend(["    " + f"Overall Opening Spread Rate: {100 * self._stats._overall_opening_spread_rate:.2f}%"])
         lines.extend(["    " + f"Last Opening Spread: {self._stats._last_opening_spread:.2f} {quote}"])
         lines.extend(["    " + f"Last Closing Spread: {self._stats._last_closing_spread:.2f} {quote}"])
+        lines.extend(["    " + f"History Records: {self._stats._history_records}"])
+        lines.extend(["    " + f"History File: {self.history_file_path or 'N/A'}"])
 
         # See if there're any active positions.
         if len(self.perp_positions) > 0:
@@ -881,7 +1020,7 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         self.logger().warning("Cannot continue. Please resolve the issue in the account.")
 
     def did_complete_funding_payment(self, funding_payment_completed_event: FundingPaymentCompletedEvent):
-        self._stats._funding_earned += funding_payment_completed_event.amount
+        self._record_funding_history(funding_payment_completed_event)
 
 
 # TODO:

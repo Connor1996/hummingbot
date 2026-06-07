@@ -1,6 +1,9 @@
 import asyncio
+import csv
+import tempfile
 import unittest
 from decimal import Decimal
+from pathlib import Path
 from test.mock.mock_perp_connector import MockPerpConnector
 from unittest.mock import patch
 
@@ -98,8 +101,12 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         self.perp_connector.add_listener(MarketEvent.OrderFilled, self.order_fill_logger)
         self.perp_connector.add_listener(MarketEvent.OrderCancelled, self.cancel_order_logger)
 
-        self.strategy = SpotPerpetualArbitrageStrategy()
-        self.strategy.init_params(
+        self.strategy = self._create_strategy()
+        self._last_tick = 0
+
+    def _create_strategy(self, history_file_path: str = None) -> SpotPerpetualArbitrageStrategy:
+        strategy = SpotPerpetualArbitrageStrategy()
+        strategy.init_params(
             spot_market_info=self.spot_market_info,
             perp_market_info=self.perp_market_info,
             total_amount=Decimal("5"),
@@ -108,10 +115,11 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
             min_opening_arbitrage_pct=Decimal("0.05"),
             min_closing_arbitrage_pct=Decimal("0.01"),
             next_arbitrage_opening_delay=10,
+            history_file_path=history_file_path,
         )
-        self.strategy.logger().setLevel(1)
-        self.strategy.logger().addHandler(self)
-        self._last_tick = 0
+        strategy.logger().setLevel(1)
+        strategy.logger().addHandler(self)
+        return strategy
 
     def test_strategy_fails_to_initialize_position_mode(self):
         self.clock.add_iterator(self.strategy)
@@ -303,6 +311,58 @@ class TestSpotPerpetualArbitrage(unittest.TestCase):
         self.assertIn("Funding Earned: 1.50 USDT", status)
         self.assertIn("Fee Paid: 0.40 USDT", status)
         self.assertIn("Net Realized PnL: 20.10 USDT", status)
+
+    def test_persists_and_loads_arbitrage_history(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            history_file_path = Path(temp_dir) / "arb_history.csv"
+            self.strategy = self._create_strategy(history_file_path=str(history_file_path))
+            self._complete_round(
+                strategy_state=StrategyState.Opening,
+                buy_order_id="buy-open",
+                sell_order_id="sell-open",
+                buy_price=Decimal("100"),
+                sell_price=Decimal("110"),
+            )
+            self._complete_round(
+                strategy_state=StrategyState.Closing,
+                buy_order_id="buy-close",
+                sell_order_id="sell-close",
+                buy_price=Decimal("90"),
+                sell_price=Decimal("99"),
+            )
+            self.strategy.did_complete_funding_payment(
+                FundingPaymentCompletedEvent(
+                    timestamp=self.start_timestamp,
+                    market=self.perp_connector.name,
+                    trading_pair=trading_pair,
+                    amount=Decimal("1.5"),
+                    funding_rate=Decimal("0.0001"),
+                )
+            )
+
+            with history_file_path.open("r", newline="") as history_file:
+                rows = list(csv.DictReader(history_file))
+
+            self.assertEqual(3, len(rows))
+            self.assertEqual("round", rows[0]["event_type"])
+            self.assertEqual("Opening", rows[0]["action"])
+            self.assertEqual("10", rows[0]["spread"])
+            self.assertEqual("0.2", rows[0]["fee_paid"])
+            self.assertEqual("9.8", rows[0]["net_pnl_delta"])
+            self.assertEqual("funding", rows[2]["event_type"])
+            self.assertEqual("1.5", rows[2]["funding_amount"])
+
+            restored_strategy = self._create_strategy(history_file_path=str(history_file_path))
+            self.assertEqual(Decimal("10"), restored_strategy._stats._opening_spread_earned)
+            self.assertEqual(Decimal("9"), restored_strategy._stats._closing_spread_earned)
+            self.assertEqual(Decimal("19"), restored_strategy._stats._spread_earned)
+            self.assertEqual(Decimal("1.5"), restored_strategy._stats._funding_earned)
+            self.assertEqual(Decimal("0.4"), restored_strategy._stats._fee_paid)
+            self.assertEqual(Decimal("20.1"), restored_strategy.realized_net_pnl)
+
+            status = asyncio.get_event_loop().run_until_complete(restored_strategy.format_status())
+            self.assertIn("History Records: 3", status)
+            self.assertIn(f"History File: {history_file_path}", status)
 
     def test_apply_slippage_buffers(self):
         proposal = ArbProposal(ArbProposalSide(self.spot_market_info, True, Decimal("100")),

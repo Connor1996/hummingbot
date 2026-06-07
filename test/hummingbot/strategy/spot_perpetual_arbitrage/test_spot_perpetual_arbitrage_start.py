@@ -60,3 +60,4 @@ class SpotPerpetualArbitrageStartTest(unittest.TestCase):
         self.assertEqual(self.strategy._perp_leverage, Decimal("2"))
         self.assertEqual(self.strategy._min_opening_arbitrage_pct, Decimal("0.1"))
         self.assertEqual(self.strategy._min_closing_arbitrage_pct, Decimal("0.01"))
+        self.assertTrue(self.strategy.history_file_path.endswith("spot_perpetual_arbitrage_arbitrage_history.csv"))

@@ -1,10 +1,18 @@
 from decimal import Decimal
+from pathlib import Path
 
+from hummingbot.client.settings import DEFAULT_LOG_FILE_PATH
 from hummingbot.strategy.market_trading_pair_tuple import MarketTradingPairTuple
 from hummingbot.strategy.spot_perpetual_arbitrage.spot_perpetual_arbitrage import SpotPerpetualArbitrageStrategy
 from hummingbot.strategy.spot_perpetual_arbitrage.spot_perpetual_arbitrage_config_map import (
     spot_perpetual_arbitrage_config_map,
 )
+
+
+def _safe_history_file_name(strategy_file_name: str) -> str:
+    strategy_name = Path(strategy_file_name or "spot_perpetual_arbitrage").stem
+    safe_name = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in strategy_name)
+    return f"{safe_name}_arbitrage_history.csv"
 
 
 async def start(self):
@@ -32,6 +40,8 @@ async def start(self):
     perpetual_market_info = MarketTradingPairTuple(self.markets[perpetual_connector], perpetual_market, base_2, quote_2)
 
     self.market_trading_pair_tuples = [spot_market_info, perpetual_market_info]
+    log_file_path = Path(getattr(self.client_config_map, "log_file_path", DEFAULT_LOG_FILE_PATH) or DEFAULT_LOG_FILE_PATH)
+    history_file_path = log_file_path / _safe_history_file_name(getattr(self, "strategy_file_name", None))
     self.strategy = SpotPerpetualArbitrageStrategy()
     self.strategy.init_params(
         spot_market_info=spot_market_info,
@@ -47,4 +57,5 @@ async def start(self):
         perp_market_slippage_buffer=perpetual_market_slippage_buffer,
         next_arbitrage_opening_delay=next_arbitrage_opening_delay,
         near_liquidation_pct=near_liquidation_pct,
+        history_file_path=str(history_file_path),
     )
